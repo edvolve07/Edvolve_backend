@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { HttpError, badRequest, unauthorized } from '../utils/httpError.js';
+import { HttpError, badRequest, locked, unauthorized } from '../utils/httpError.js';
 import { normalizeEmail, roleForEmail } from '../utils/roles.js';
 import { verifyPassword } from '../../utils/auth.js';
 import {
@@ -86,6 +86,7 @@ router.post(
         ? await verifyPassword(password, user.password_salt, user.password_hash)
         : false;
     if (!valid) throw unauthorized('Invalid email or password');
+    if (user.is_active === false) throw locked();
 
     const configuredRole = roleForEmail(normalizedEmail);
     if (!isBcryptHash) {
@@ -188,6 +189,45 @@ router.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     res.json({ user: req.user.toSafeJSON() });
+  }),
+);
+
+router.post(
+  '/change-password',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const errors = [];
+
+    if (!currentPassword) errors.push('Current password is required');
+    if (!newPassword || newPassword.length < 8) errors.push('New password must be at least 8 characters');
+    if (newPassword !== confirmPassword) errors.push('Passwords do not match');
+    if (errors.length) throw badRequest('Validation failed', errors);
+
+    const user = await User.findById(req.user._id).select('+password_hash +password_salt');
+    if (!user) throw unauthorized('User not found');
+
+    const isBcryptHash = String(user.password_hash || '').startsWith('$2');
+    const valid = isBcryptHash
+      ? await bcrypt.compare(currentPassword, user.password_hash)
+      : user.password_salt
+        ? await verifyPassword(currentPassword, user.password_salt, user.password_hash)
+        : false;
+
+    if (!valid) throw badRequest('Current password is incorrect');
+
+    user.password_hash = await bcrypt.hash(newPassword, 12);
+    user.password_salt = undefined;
+    user.must_change_password = false;
+    await user.save();
+
+    const token = signToken(user);
+
+    res.json({
+      message: 'Password has been changed successfully.',
+      user: user.toSafeJSON(),
+      token,
+    });
   }),
 );
 

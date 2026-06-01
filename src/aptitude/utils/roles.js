@@ -4,6 +4,14 @@ export const ROLES = {
   MASTER_ADMIN: 'master_admin',
 };
 
+export const MODULES = {
+  AI_INTERVIEW: 'ai_interview',
+  APTITUDE: 'aptitude',
+  BOTH: 'both',
+};
+
+export const MODULE_OPTIONS = Object.values(MODULES);
+
 export function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }

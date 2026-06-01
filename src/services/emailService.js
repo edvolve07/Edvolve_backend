@@ -289,4 +289,151 @@ export async function sendPasswordResetEmail({ to, name, resetLink }) {
   }
 }
 
+function createAccountCreationTemplate({ name, email: userEmail, tempPassword }) {
+  const safeName = escapeHtml(name || 'User');
+  const safeEmail = escapeHtml(userEmail);
+  const safeTempPassword = escapeHtml(tempPassword);
+
+  const text = [
+    `Dear ${name || 'User'},`,
+    '',
+    `Your PrepUp account has been created.`,
+    '',
+    `Account details:`,
+    `  Name:  ${name}`,
+    `  Email: ${userEmail}`,
+    `  Temporary password: ${tempPassword}`,
+    '',
+    'Please login and change your password at the earliest.',
+    '',
+    `Login URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}/login`,
+    '',
+    'Regards,',
+    'The PrepUp Team',
+  ].join('\n');
+
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Welcome to PrepUp</title>
+  </head>
+  <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+            <tr>
+              <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">PrepUp</div>
+                <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px;">
+                <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Dear ${safeName},</p>
+                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Welcome to PrepUp</h1>
+                <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
+                  Your account has been created. Please find your login details below.
+                </p>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:22px 0;width:100%;">
+                  <tr>
+                    <td style="padding:18px 20px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;">
+                      <table role="presentation" cellspacing="0" cellpadding="0" width="100%">
+                        <tr>
+                          <td style="padding:4px 0;font-size:14px;color:#64748b;width:140px;">Name:</td>
+                          <td style="padding:4px 0;font-size:14px;font-weight:600;color:#0f172a;">${safeName}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding:4px 0;font-size:14px;color:#64748b;">Email:</td>
+                          <td style="padding:4px 0;font-size:14px;font-weight:600;color:#0f172a;">${safeEmail}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding:4px 0;font-size:14px;color:#64748b;">Temporary password:</td>
+                          <td style="padding:4px 0;font-size:14px;font-weight:600;color:#0f172a;font-family:monospace;">${safeTempPassword}</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 20px;font-size:15px;line-height:1.7;color:#475569;">
+                  Please login and change your password at the earliest to secure your account.
+                </p>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0;">
+                  <tr>
+                    <td style="border-radius:10px;background:#2563eb;">
+                      <a href="${escapeHtml(process.env.CLIENT_URL || 'http://localhost:5173')}/login" style="display:inline-block;padding:14px 22px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
+                        Login to PrepUp
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+                <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
+                  For your security, please change your password immediately after first login.
+                </p>
+                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The PrepUp Team</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  return { text, html };
+}
+
+export async function sendAccountCreationEmail({ to, name, tempPassword }) {
+  if (!isEmailServiceConfigured()) {
+    throw new Error('SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.');
+  }
+
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 587);
+  const secure = boolEnv('SMTP_SECURE', port === 465);
+  const startTls = boolEnv('SMTP_STARTTLS', !secure);
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const safeName = name || 'PrepUp user';
+  const subject = 'Your PrepUp account has been created';
+  const { text, html } = createAccountCreationTemplate({ name: safeName, email: to, tempPassword });
+
+  const client = createSmtpClient({ host, port, secure });
+  try {
+    await client.waitFor(220);
+    await client.command(`EHLO ${process.env.SMTP_HELO_DOMAIN || 'localhost'}`, 250);
+    if (startTls) {
+      await client.command('STARTTLS', 220);
+      await client.startTls();
+      await client.command(`EHLO ${process.env.SMTP_HELO_DOMAIN || 'localhost'}`, 250);
+    }
+    await client.command('AUTH LOGIN', 334);
+    await client.command(Buffer.from(process.env.SMTP_USER).toString('base64'), 334);
+    await client.command(Buffer.from(process.env.SMTP_PASS).toString('base64'), 235);
+    await client.command(`MAIL FROM:<${escapeAddress(from)}>`, 250);
+    await client.command(`RCPT TO:<${escapeAddress(to)}>`, [250, 251]);
+    await client.command('DATA', 354);
+    await client.command(`${escapeData(createMessage({ to, subject, text, html }))}\r\n.`, 250);
+    await client.command('QUIT', 221).catch(() => null);
+  } catch (error) {
+    const details = [
+      error?.message,
+      error?.code ? `code=${error.code}` : '',
+      error?.errno ? `errno=${error.errno}` : '',
+      error?.syscall ? `syscall=${error.syscall}` : '',
+      error?.hostname ? `host=${error.hostname}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    throw new Error(details || 'Email delivery failed');
+  } finally {
+    client.close();
+  }
+}
+
 export { RESET_TOKEN_TTL_MINUTES };

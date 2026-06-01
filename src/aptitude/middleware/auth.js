@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User.js';
-import { forbidden, unauthorized } from '../utils/httpError.js';
+import { forbidden, locked, unauthorized } from '../utils/httpError.js';
 
 export async function requireAuth(req, _res, next) {
   try {
@@ -15,6 +15,10 @@ export async function requireAuth(req, _res, next) {
     const user = await User.findById(payload.sub);
     if (!user) {
       throw unauthorized('Invalid session');
+    }
+
+    if (user.is_active === false) {
+      throw locked();
     }
 
     req.user = user;

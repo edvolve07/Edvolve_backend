@@ -21,3 +21,7 @@ export function forbidden(message = 'You do not have permission to access this r
 export function notFound(message = 'Resource not found') {
   return new HttpError(404, message);
 }
+
+export function locked(message = 'Access on hold, please contact administrator') {
+  return new HttpError(423, message);
+}
