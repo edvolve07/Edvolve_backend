@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI"/>
 </p>
 
-<h1 align="center">🎯 PrepUp Backend</h1>
+<h1 align="center">PrepUp Backend</h1>
 <p align="center">
   <strong>Node.js + Express backend powering the PrepUp AI-driven placement readiness platform</strong>
   <br/>
@@ -17,82 +17,264 @@
 
 ---
 
-## 📋 Table of Contents
+## System Architecture
 
-- [Architecture](#-architecture)
-- [Tech Stack](#-tech-stack)
-- [Getting Started](#-getting-started)
-- [Environment Variables](#-environment-variables)
-- [API Reference](#-api-reference)
-  - [Interview System](#interview-system)
-  - [Authentication](#authentication)
-  - [Student Routes](#student-routes)
-  - [Admin Routes](#admin-routes)
-  - [Master Admin Routes](#master-admin-routes)
-- [Database Schemas](#-database-schemas)
-  - [Native Collections](#native-collections)
-  - [Mongoose Models](#mongoose-models)
-- [AI Services](#-ai-services)
-- [Project Structure](#-project-structure)
-- [Security](#-security)
-- [Scripts](#-scripts)
+```mermaid
+graph TB
+    subgraph Client["Client Layer"]
+        F[Frontend - Vite/React]
+    end
+
+    subgraph Gateway["API Gateway"]
+        direction TB
+        EX[Express Server :8000]
+        MW[Middleware Stack]
+        MW --> Helmet
+        MW --> CORS
+        MW --> Morgan
+        MW --> Multer
+    end
+
+    subgraph Routes["Route Modules"]
+        direction TB
+        INT["/api/start, /api/answer, /api/end"]
+        AUTH["/api/auth/*"]
+        STU["/api/student/*"]
+        ADM["/api/admin/*"]
+        MAS["/api/master/*"]
+    end
+
+    subgraph Services["Services Layer"]
+        direction TB
+        AI[AiService - Groq LLM]
+        STT[Transcriber - Whisper]
+        MED[MediaService - ffmpeg]
+        RES[ResumeParser - PDF]
+        PDF[PDFReports - PDFKit]
+        EMAIL[EmailService - SMTP]
+        SCORE[ScoringService]
+        AIU[AIUsageTracker]
+    end
+
+    subgraph DB["Data Layer"]
+        direction TB
+        MONGO_NATIVE[(Native Driver<br/>sessions, reports<br/>ai_usage, users)]
+        MONGO_MG[(Mongoose ODM<br/>users, assessments<br/>questions, attempts<br/>answers)]
+    end
+
+    F --> EX
+    EX --> MW
+    MW --> Routes
+    Routes --> Services
+    Services --> DB
+    INT --> AI
+    INT --> STT
+    INT --> MED
+    INT --> RES
+    INT --> PDF
+    AUTH --> EMAIL
+    STU --> SCORE
+    ADM --> AI
+```
 
 ---
 
-## 🏗️ Architecture
+## Request Flow
 
+```mermaid
+sequenceDiagram
+    participant Client as Frontend
+    participant MW as Middleware
+    participant Auth as Auth Middleware
+    participant Route as Route Handler
+    participant Service as Service Layer
+    participant DB as MongoDB
+
+    Client->>MW: HTTP Request
+    MW->>MW: Helmet, CORS, Logging
+    MW->>Auth: JWT Verification
+
+    alt Public Route
+        Auth->>Route: Skip auth
+    else Protected Route
+        Auth->>Auth: Verify JWT
+        Auth->>Auth: Check is_active
+        Auth->>Auth: Check role
+        alt Inactive User
+            Auth-->>Client: 423 Locked
+        else Wrong Role
+            Auth-->>Client: 403 Forbidden
+        else Valid
+            Auth->>Route: Attach req.user
+        end
+    end
+
+    Route->>Service: Process request
+    Service->>DB: Query / Write
+    DB-->>Service: Result
+    Service-->>Route: Response data
+    Route-->>Client: JSON Response
 ```
-                  ┌──────────────────────┐
-                  │     Frontend (Vite)   │
-                  │   React + Tailwind    │
-                  └──────────┬───────────┘
-                             │  HTTP / WebSocket
-                             ▼
-                  ┌──────────────────────┐
-                  │   Express Server      │
-                  │   (port 8000)        │
-                  ├──────────────────────┤
-                  │   Middleware Stack    │
-                  │  · Helmet (security) │
-                  │  · CORS              │
-                  │  · Morgan (logging)  │
-                  │  · Multer (uploads)  │
-                  │  · JWT/UUID auth     │
-                  ├──────────────────────┤
-                  │   Route Modules      │
-                  │  /api/auth/*         │
-                  │  /api/student/*      │
-                  │  /api/admin/*        │
-                  │  /api/master/*       │
-                  │  /api/* (interview)  │
-                  ├──────────────────────┤
-                  │   Services Layer     │
-                  │  · AiService (Groq)  │
-                  │  · Transcriber       │
-                  │  · MediaService      │
-                  │  · ResumeParser      │
-                  │  · PDFReports        │
-                  │  · EmailService      │
-                  │  · ScoringService    │
-                  └──────────┬───────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              ▼                              ▼
-   ┌────────────────────┐       ┌────────────────────┐
-   │  MongoDB (Native)   │       │  MongoDB (Mongoose) │
-   │  sessions, reports  │       │  users, assessments │
-   │  users (legacy)     │       │  questions, answers │
-   │  ai_usage           │       │  attempts           │
-   └────────────────────┘       └────────────────────┘
+
+---
+
+## AI Pipeline
+
+```mermaid
+graph LR
+    subgraph Interview["Interview Pipeline"]
+        direction TB
+        I1[Upload Resume] --> I2[ATS Analysis - Groq]
+        I2 --> I3[Generate Question - Groq]
+        I3 --> I4[Record Answer]
+        I4 --> I5[Transcribe - Whisper]
+        I5 --> I6[Evaluate - Groq 5 Metrics]
+        I6 --> I7[Next Question / Report]
+    end
+
+    subgraph Aptitude["Aptitude Pipeline"]
+        direction TB
+        A1[Configure Assessment] --> A2{Generation Mode}
+        A2 -->|Fast| A3[Algorithmic Templates<br/>20 Concept Categories]
+        A2 -->|AI| A4[AI Provider<br/>NVIDIA / OpenAI / Generic]
+        A3 --> A5[Questions + Answer Key]
+        A4 --> A5
+        A5 --> A6[Student Attempt]
+        A6 --> A7[Auto-Scoring]
+    end
+
+    subgraph Tracking["Usage Tracking"]
+        T1[ai_usage Collection]
+        T2[30-Day Aggregation]
+        T3[Master Dashboard]
+    end
+
+    Interview --> Tracking
+    Aptitude --> Tracking
 ```
+
+---
+
+## Database Relationships
+
+```mermaid
+erDiagram
+    User ||--o{ Assessment : creates
+    Assessment ||--o{ Question : contains
+    Assessment ||--o{ AssessmentAttempt : has
+    User ||--o{ AssessmentAttempt : takes
+    AssessmentAttempt ||--o{ StudentAnswer : includes
+    Question ||--o{ StudentAnswer : answered-in
+
+    User {
+        ObjectId id
+        string name
+        string email
+        string role "student | admin | master_admin"
+        boolean is_active
+    }
+
+    Assessment {
+        ObjectId id
+        string title
+        string concept
+        string difficulty
+        int duration_minutes
+        int total_marks
+        int passing_marks
+        string status "draft | published"
+    }
+
+    Question {
+        ObjectId id
+        ObjectId assessment_id
+        string question_text
+        string option_a
+        string option_b
+        string option_c
+        string option_d
+        string correct_option "A|B|C|D"
+        string concept
+        string difficulty
+        int marks
+        int negative_marks
+    }
+
+    AssessmentAttempt {
+        ObjectId id
+        ObjectId assessment_id
+        ObjectId student_id
+        datetime started_at
+        datetime submitted_at
+        int extra_time_minutes
+        float score
+        float percentage
+        string status "in_progress | submitted"
+    }
+
+    StudentAnswer {
+        ObjectId id
+        ObjectId attempt_id
+        ObjectId question_id
+        string selected_option "A|B|C|D|null"
+        boolean is_correct
+        float marks_awarded
+    }
+```
+
+---
+
+## Database Strategy
 
 The backend uses **two MongoDB connection strategies**:
-- **Native `mongodb` driver** for the interview system sessions, reports, user auth, and AI usage tracking
-- **Mongoose ODM** for the aptitude assessment sub-system with full schema validation and relationships
+
+| Strategy | Usage | Collections |
+|---|---|---|
+| **Native Driver** | Interview system, legacy auth, AI tracking | `sessions`, `reports`, `ai_usage`, `users` |
+| **Mongoose ODM** | Aptitude assessment sub-system with schema validation | `users`, `assessments`, `questions`, `assessmentAttempts`, `studentAnswers` |
 
 ---
 
-## 🛠️ Tech Stack
+## Role Hierarchy
+
+```mermaid
+graph BT
+    subgraph Roles["Three Role Tiers"]
+        direction BT
+        ST[Student]
+        AD[Admin]
+        SA[Super Admin]
+    end
+
+    subgraph AuthMethods["Authentication Methods"]
+        direction LR
+        JWT[JWT + bcrypt - Mongoose]
+        UUID[UUID + scrypt - Native]
+    end
+
+    ST -->|Can access| JWT
+    AD -->|Can access| JWT
+    SA -->|Can access| JWT
+    ST -->|Legacy| UUID
+
+    subgraph RoutesPerms["Route Access"]
+        direction LR
+        R_STU[/api/student/*]
+        R_ADM[/api/admin/*]
+        R_MAS[/api/master/*]
+    end
+
+    ST --> R_STU
+    AD --> R_ADM
+    AD --> R_STU
+    SA --> R_MAS
+    SA --> R_ADM
+    SA --> R_STU
+```
+
+---
+
+## Tech Stack
 
 | Category | Technology |
 |---|---|
@@ -101,387 +283,253 @@ The backend uses **two MongoDB connection strategies**:
 | **Databases** | MongoDB 6+ (Native Driver + Mongoose 8) |
 | **Authentication** | JWT (jsonwebtoken) + UUID v4 tokens |
 | **AI / LLMs** | Groq SDK (LLaMA, Mixtral, Whisper) + OpenAI SDK (NVIDIA NIM) |
-| **File Processing** | Multer, pdf-parse, mammoth (DOCX), pdfkit (PDF generation), ffmpeg + ffprobe |
+| **File Processing** | Multer, pdf-parse, mammoth, pdfkit, ffmpeg + ffprobe |
 | **Security** | Helmet, bcryptjs, CORS |
-| **Email** | Raw SMTP (net/tls — no nodemailer) |
+| **Email** | Raw SMTP (net/tls) |
 | **Utilities** | xlsx (CSV/Excel bulk import) |
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- **Node.js** >= 20
-- **MongoDB** >= 6.0 (local or Atlas)
-- **ffmpeg** + **ffprobe** installed and on PATH (for audio/video processing)
-- A **Groq API key** (for interview AI + transcription)
-- (Optional) NVIDIA NIM API key for AI-powered question generation
+- Node.js >= 20
+- MongoDB >= 6.0 (local or Atlas)
+- ffmpeg + ffprobe on PATH
+- Groq API key (interview AI + transcription)
+- (Optional) NVIDIA NIM API key for aptitude AI generation
 
 ### Installation
 
 ```bash
-# 1. Clone the repository
 git clone <repo-url>
 cd backend
-
-# 2. Install dependencies
 npm install
-
-# 3. Configure environment
 cp .env.example .env
-# Edit .env with your configuration
-
-# 4. Start development server
 npm run dev
 ```
 
-The server starts at **http://localhost:8000** by default.
+Server starts at **http://localhost:8000**.
 
 ---
 
-## 🔐 Environment Variables
+## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| **`MONGO_URI`** | ✅ | `mongodb://127.0.0.1:27017/prepup` | MongoDB connection string (Native Driver) |
-| **`MONGODB_URI`** | ✅ | same as above | MongoDB connection string (Mongoose) |
-| **`PORT`** | ❌ | `8000` | Server port |
-| **`NODE_ENV`** | ❌ | `development` | Environment mode |
-| **`JWT_SECRET`** | ✅ | — | Secret key for JWT signing |
-| **`JWT_EXPIRES_IN`** | ❌ | `7d` | JWT expiration duration |
-| **`CLIENT_URL`** | ✅ | — | Frontend URL for CORS |
-| **`ADMIN_EMAILS`** | ❌ | — | Comma/space-separated emails auto-assigned `admin` role |
-| **`MASTER_ADMIN_EMAILS`** | ❌ | — | Comma/space-separated emails auto-assigned `master_admin` role |
-| **`GROQ_API_KEY`** | ✅* | — | Groq API key (interviews, transcription, evaluations) |
-| **`NVIDIA_NIM_API_KEY`** | ❌ | — | NVIDIA NIM key (aptitude AI generation) |
-| **`NVIDIA_NIM_BASE_URL`** | ❌ | `https://integrate.api.nvidia.com/v1` | NVIDIA NIM API base |
-| **`NVIDIA_NIM_MODEL`** | ❌ | `minimaxai/minimax-m2.7` | NVIDIA NIM model |
-| **`AI_PROVIDER`** | ❌ | `nvidia` | AI provider: `nvidia`, `openai`, or `generic` |
-| **`AI_DEFAULT_GENERATION_MODE`** | ❌ | `fast` | Generation mode: `fast` (algorithmic) or `ai` |
-| **`AI_BATCH_SIZE`** | ❌ | `5` | Questions per batch in AI mode |
-| **`AI_BATCH_CONCURRENCY`** | ❌ | `2` | Concurrent AI batches |
-| **`AI_TIMEOUT_MS`** | ❌ | `120000` | AI request timeout |
-| **`SMTP_HOST`** | ✅* | — | SMTP server for password reset emails |
-| **`SMTP_USER`** | ✅* | — | SMTP login |
-| **`SMTP_PASS`** | ✅* | — | SMTP password |
-| **`SMTP_FROM`** | ❌ | — | Sender address |
-| **`PASSWORD_RESET_BASE_URL`** | ❌ | — | Base URL for reset links |
+| `MONGO_URI` | Yes | `mongodb://127.0.0.1:27017/prepup` | Native driver connection string |
+| `MONGODB_URI` | Yes | same as above | Mongoose connection string |
+| `PORT` | No | `8000` | Server port |
+| `NODE_ENV` | No | `development` | Environment mode |
+| `JWT_SECRET` | Yes | — | Secret key for JWT signing |
+| `JWT_EXPIRES_IN` | No | `7d` | JWT expiration duration |
+| `CLIENT_URL` | Yes | — | Frontend URL for CORS |
+| `ADMIN_EMAILS` | No | — | Emails auto-assigned `admin` role |
+| `MASTER_ADMIN_EMAILS` | No | — | Emails auto-assigned `master_admin` role |
+| `GROQ_API_KEY` | Yes* | — | Groq API key (interviews, transcription, evaluations) |
+| `NVIDIA_NIM_API_KEY` | No | — | NVIDIA NIM key (aptitude AI generation) |
+| `NVIDIA_NIM_BASE_URL` | No | `https://integrate.api.nvidia.com/v1` | NVIDIA NIM API base |
+| `NVIDIA_NIM_MODEL` | No | `minimaxai/minimax-m2.7` | NVIDIA NIM model |
+| `AI_PROVIDER` | No | `nvidia` | AI provider: `nvidia`, `openai`, or `generic` |
+| `SMTP_HOST` | Yes* | — | SMTP server for emails |
+| `SMTP_USER` | Yes* | — | SMTP login |
+| `SMTP_PASS` | Yes* | — | SMTP password |
+| `SMTP_FROM` | No | — | Sender address |
 
 > \* Required only if the corresponding feature is used.
 
 ---
 
-## 📡 API Reference
+## API Reference
 
-### Interview System
-
-Routes defined in `src/server.js`.
+### Interview System (server.js)
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | `GET` | `/` | — | Health check |
-| `GET` | `/api/health` | — | Detailed health status (MongoDB, STT) |
-| `POST` | `/api/signup` | — | Register new user (UUID token auth) |
+| `GET` | `/api/health` | — | Full health status |
+| `POST` | `/api/signup` | — | Register (UUID token auth) |
 | `POST` | `/api/login` | — | Login (UUID token auth) |
-| `GET` | `/api/me` | Bearer | Current user profile |
-| `POST` | `/api/start` | Bearer | Upload resume PDF, start interview, get ATS + first question |
-| `POST` | `/api/answer_text` | Bearer | Submit text answer → evaluation + next question |
-| `POST` | `/api/answer_video` | Bearer | Submit video answer → transcription + body language → evaluation |
-| `POST` | `/api/answer_video_with_audio` | Bearer | Submit separate video + audio tracks |
-| `POST` | `/api/end` | Bearer | Finalize interview → generate full report |
-| `GET` | `/api/reports` | Bearer | List all reports (admin: all, student: own) |
-| `GET` | `/api/report/:session_id` | Bearer | Get full report |
-| `GET` | `/api/report/:session_id/pdf` | Bearer | Download performance PDF |
-| `GET` | `/api/report/:session_id/ats` | Bearer | Download ATS summary PDF |
-| `GET` | `/api/aptitude/questions` | — | Random aptitude questions (answers excluded) |
-| `POST` | `/api/aptitude/submit` | — | Submit aptitude answers → score |
+| `GET` | `/api/me` | Bearer UUID | Current user profile |
+| `POST` | `/api/start` | Bearer UUID | Upload resume, start interview |
+| `POST` | `/api/answer_text` | Bearer UUID | Submit text answer |
+| `POST` | `/api/answer_video` | Bearer UUID | Submit video answer |
+| `POST` | `/api/answer_video_with_audio` | Bearer UUID | Submit separate video + audio |
+| `POST` | `/api/end` | Bearer UUID | Finalize + generate report |
+| `GET` | `/api/reports` | Bearer UUID | List reports |
+| `GET` | `/api/report/:session_id` | Bearer UUID | Get full report |
+| `GET` | `/api/report/:session_id/pdf` | Bearer UUID | Download performance PDF |
+| `GET` | `/api/report/:session_id/ats` | Bearer UUID | Download ATS summary PDF |
 
-### Authentication
-
-Routes defined in `src/aptitude/routes/authRoutes.js`.
+### Authentication (authRoutes.js)
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `POST` | `/api/auth/signup` | — | Register (bcrypt) → JWT + auto role assignment |
-| `POST` | `/api/auth/login` | — | Login (bcrypt, legacy scrypt fallback) → JWT |
-| `POST` | `/api/auth/forgot-password` | — | Send password reset email (5-min TTL) |
-| `POST` | `/api/auth/reset-password` | — | Reset password with token |
+| `POST` | `/api/auth/signup` | — | Register (bcrypt) + auto role |
+| `POST` | `/api/auth/login` | — | Login (bcrypt, scrypt fallback) |
+| `POST` | `/api/auth/forgot-password` | — | Send reset email (5-min TTL) |
+| `POST` | `/api/auth/reset-password` | — | Reset with token |
 | `GET` | `/api/auth/me` | JWT | Current user profile |
 
-### Student Routes
-
-All require `requireAuth` + `requireRole('student')`. Defined in `src/aptitude/routes/studentRoutes.js`.
+### Student Routes (studentRoutes.js) — Role: `student`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/student/dashboard` | Stats: available/submitted assessments, pass rate, topic analytics, interview history |
-| `GET` | `/api/student/assessments` | List published assessments |
-| `POST` | `/api/student/assessments/:id/start` | Start or resume an attempt |
-| `GET` | `/api/student/attempts/:attemptId/time` | Get remaining time (with sync for admin extensions) |
-| `PUT` | `/api/student/attempts/:attemptId/answers` | Save/update a single answer |
-| `POST` | `/api/student/attempts/:attemptId/submit` | Submit attempt → triggers scoring |
-| `GET` | `/api/student/results` | List all results |
-| `GET` | `/api/student/results/:attemptId` | Detailed result with per-question breakdown |
+| `GET` | `/api/student/dashboard` | Stats and analytics |
+| `GET` | `/api/student/assessments` | Published assessments |
+| `POST` | `/api/student/assessments/:id/start` | Start or resume attempt |
+| `GET` | `/api/student/attempts/:id/time` | Remaining time |
+| `PUT` | `/api/student/attempts/:id/answers` | Save answer |
+| `POST` | `/api/student/attempts/:id/submit` | Submit for scoring |
+| `GET` | `/api/student/results` | All results |
+| `GET` | `/api/student/results/:id` | Result with per-question breakdown |
 
-### Admin Routes
-
-All require `requireAuth` + `requireRole('admin')`. Defined in `src/aptitude/routes/adminRoutes.js`.
+### Admin Routes (adminRoutes.js) — Role: `admin`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/dashboard` | Aggregate stats: assessments, students, submissions, pass rate, interviews |
-| `GET` | `/api/admin/analytics/aptitude` | Per-student aptitude analytics |
-| `GET` | `/api/admin/analytics/interviews` | Interview report analytics |
-| `POST` | `/api/admin/assessments/generate` | AI-generate or algorithm-generate questions + create assessment |
+| `GET` | `/api/admin/dashboard` | Aggregate stats |
+| `GET` | `/api/admin/analytics/aptitude` | Per-student analytics |
+| `GET` | `/api/admin/analytics/interviews` | Interview analytics |
+| `POST` | `/api/admin/assessments/generate` | AI/algorithmic generation |
 | `GET` | `/api/admin/assessments` | List all assessments |
 | `POST` | `/api/admin/assessments` | Create blank assessment |
-| `GET` | `/api/admin/assessments/:id` | Get assessment + questions |
-| `PATCH` | `/api/admin/assessments/:id` | Update assessment fields |
-| `DELETE` | `/api/admin/assessments/:id` | Soft-delete assessment |
+| `GET` | `/api/admin/assessments/:id` | Assessment + questions |
+| `PATCH` | `/api/admin/assessments/:id` | Update fields |
+| `DELETE` | `/api/admin/assessments/:id` | Soft-delete |
 | `PATCH` | `/api/admin/assessments/:id/status` | Publish/unpublish |
-| `PATCH` | `/api/admin/assessments/:id/extend-duration` | Add time to assessment duration |
+| `PATCH` | `/api/admin/assessments/:id/extend-duration` | Add time |
 | `PUT` | `/api/admin/assessments/:id/questions` | Bulk replace questions |
-| `GET` | `/api/admin/assessments/:id/results` | All student results for an assessment |
-| `PATCH` | `/api/admin/attempts/:attemptId/extend` | Add extra time to a student's in-progress attempt |
+| `GET` | `/api/admin/assessments/:id/results` | All student results |
+| `PATCH` | `/api/admin/attempts/:id/extend` | Extend student attempt time |
 
-### Master Admin Routes
-
-All require `requireAuth` + `requireRole('master_admin')`. Defined in `src/aptitude/routes/masterAdminRoutes.js`.
+### Master Admin Routes (masterAdminRoutes.js) — Role: `master_admin`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/master/dashboard` | User counts, recent users, AI usage summary |
+| `GET` | `/api/master/dashboard` | User counts + AI usage |
 | `GET` | `/api/master/users` | List/search users (paginated) |
-| `POST` | `/api/master/users` | Create a single user |
+| `POST` | `/api/master/users` | Create user (single) |
 | `POST` | `/api/master/users/import` | Bulk import via CSV/Excel |
 | `PATCH` | `/api/master/users/:id/role` | Change user role |
-| `GET` | `/api/master/api-keys` | List AI provider configs (masked) |
-| `PATCH` | `/api/master/api-keys/:providerId` | Update API key (persists to .env + runtime) |
+| `PATCH` | `/api/master/users/:id/revoke` | Revoke user access |
+| `PATCH` | `/api/master/users/:id/restore` | Restore user access |
+| `DELETE` | `/api/master/users/:id` | Delete user |
+| `GET` | `/api/master/api-keys` | List API configs (masked) |
+| `PATCH` | `/api/master/api-keys/:id` | Update API key |
 
 ---
 
-## 🗄️ Database Schemas
+## AI Services
 
-### Native Collections (`src/db.js`)
+### Interview AI — Groq
 
-**`sessions`** — Interview sessions
-```js
-{
-  session_id: String (uuid, unique),
-  student_id: String,
-  student_name: String,
-  student_email: String,
-  student_role: String,
-  domain: String,
-  role: String,
-  resume_text: String,
-  ats_analysis: { ats_score: Number, skills_found: [String], improvements: [String] },
-  history: [{ question_number, question, answer, evaluation, video_metrics?, timestamp }],
-  current_question: String,
-  question_count: Number,
-  status: 'active' | 'completed' | 'ended',
-  created_at: Date
-}
-```
+| Model | Purpose | Fallback Order |
+|---|---|---|
+| `llama-3.1-8b-instant` | Primary | 1st |
+| `llama-3.3-70b-versatile` | Fallback | 2nd |
+| `mixtral-8x7b-32768` | Fallback | 3rd |
 
-**`reports`** — Interview reports
-```js
-{
-  session_id: String (unique),
-  student_id: String, student_name, student_email,
-  interview_domain, interview_role, report_id,
-  generated_date: String,
-  overall: { total_score, max_score, percentage, grade, grade_label, metrics },
-  ats_analysis: { ats_score, skills_found, improvements },
-  question_breakdown: [{ number, question, answer, evaluation }],
-  strengths: [String], areas_to_improve: [String], interview_tips: [String],
-  created_at: Date
-}
-```
+- Resume ATS analysis (score, skills found, improvements)
+- Dynamic context-aware interview questions
+- 5-dimension answer evaluation: confidence, body language, knowledge, fluency, skill relevance
+- Overall report generation (strengths, weaknesses, tips)
 
-**`ai_usage`** — AI request tracking
-```js
-{
-  provider: String, model: String, feature: String,
-  status: 'success' | 'error', prompt_tokens, completion_tokens, total_tokens: Number,
-  metadata: {}, created_at: Date
-}
-```
+### Speech-to-Text — Groq Whisper
 
-### Mongoose Models (`src/aptitude/models/`)
+- Model: `whisper-large-v3-turbo`
+- Optimized for technical interview vocabulary
 
-**`User`** — Platform users
-```js
-{
-  name: String, email: String (unique),
-  password_hash: String (select: false), password_salt: String (select: false),
-  password_reset_token_hash: String (select: false), password_reset_expires_at: Date,
-  role: 'student' | 'admin' | 'master_admin'
-}
-// Method: toSafeJSON() – strips sensitive fields
-```
+### Aptitude Question Generation
 
-**`Assessment`** — MCQ tests
-```js
-{
-  title, description, concept: String (one of 20 topics),
-  difficulty: 'Easy' | 'Medium' | 'Hard' | 'Mixed',
-  duration_minutes: Number, total_marks: Number, passing_marks: Number,
-  start_time: Date, end_time: Date,
-  status: 'draft' | 'published', is_deleted: Boolean,
-  created_by: ObjectId ref 'User'
-}
-// Virtual: total_questions
-```
+- **Fast mode (default):** Algorithmic generation using 20 concept templates — zero API calls, instant results
+- **AI mode:** Configurable provider (NVIDIA NIM, OpenAI, or generic OpenAI-compatible)
+- Configurable batch size (5) and concurrency (2) with per-question fallback
+- Supports PDF, DOCX, TXT uploads as reference material
 
-**`Question`** — Individual MCQ questions
-```js
-{
-  assessment_id: ObjectId ref 'Assessment',
-  question_text: String, option_a/b/c/d: String,
-  correct_option: 'A' | 'B' | 'C' | 'D',
-  explanation: String, shortcut: String,
-  concept: String, difficulty: String,
-  marks: Number, negative_marks: Number
-}
-```
+### Usage Tracking
 
-**`AssessmentAttempt`** — Student attempt on an assessment
-```js
-{
-  assessment_id: ObjectId ref 'Assessment',
-  student_id: ObjectId ref 'User',
-  started_at: Date, submitted_at: Date,
-  extra_time_minutes: Number (default: 0),
-  score: Number, percentage: Number,
-  status: 'in_progress' | 'submitted'
-}
-```
-
-**`StudentAnswer`** — Per-question answer within an attempt
-```js
-{
-  attempt_id: ObjectId ref 'AssessmentAttempt',
-  question_id: ObjectId ref 'Question',
-  selected_option: 'A' | 'B' | 'C' | 'D' | null,
-  is_correct: Boolean, marks_awarded: Number
-}
-// Compound unique index: { attempt_id, question_id }
-```
+Every AI call recorded to `ai_usage` collection with provider, model, feature, token counts, and status. 30-day aggregation available via master admin dashboard.
 
 ---
 
-## 🤖 AI Services
+## Security
 
-### Interview AI (`src/services/aiService.js`)
-- **Provider:** Groq (via `groq-sdk`)
-- **Models (fallback chain):**
-  1. `llama-3.1-8b-instant`
-  2. `llama-3.3-70b-versatile`
-  3. `mixtral-8x7b-32768`
-- **Capabilities:**
-  - Resume ATS analysis (score, skills found, improvements)
-  - Dynamic interview questions (first + context-aware follow-ups)
-  - 5-dimension answer evaluation: confidence, body language, knowledge, fluency, skill relevance
-  - Overall report generation (strengths, weaknesses, tips)
-
-### Speech-to-Text (`src/services/transcriber.js`)
-- **Provider:** Groq Whisper API
-- **Model:** `whisper-large-v3-turbo`
-- **Features:** English transcription with technical interview context prompt
-
-### Aptitude Question Generation (`src/aptitude/services/aiService.js`)
-- **Dual mode:**
-  - **`fast` mode (default):** Algorithmic generation using 20 pre-defined concept templates (Percentages, Profit/Loss, Time & Work, etc.) — no API calls, instant results
-  - **`ai` mode:** Configurable AI provider via OpenAI-compatible SDK (NVIDIA NIM by default, or OpenAI/generic)
-- **Batching:** Configurable batch size (5) and concurrency (2), with per-question fallback on batch failure
-- **Supported file context:** PDF, DOCX, TXT uploads as reference material for question generation
-
-### AI Usage Tracking (`src/services/aiUsageService.js`)
-- Every AI call is recorded to the `ai_usage` collection
-- Tracked fields: provider, model, feature (interview, transcription, question_generation, evaluation), token counts, status
-- 30-day aggregation available via master admin dashboard
+- Password hashing: bcrypt (cost 12) with legacy scrypt migration
+- JWT: 7-day expiry, signed with configurable secret
+- Sensitive fields (`password_hash`, `password_salt`, `password_reset_token`) excluded from queries via `select: false`
+- API keys stored in `.env` + runtime memory; masked in responses
+- CORS restricted to `CLIENT_URL`
+- Helmet security headers applied globally
+- Multer file upload limits: 5–8 MB
+- Centralized error handler prevents stack traces in production
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 backend/
 ├── src/
-│   ├── server.js                 # Express entry point + interview routes
-│   ├── config.js                 # Central environment configuration
-│   ├── db.js                     # Native MongoDB connection
+│   ├── server.js                   # Express entry point + interview routes
+│   ├── config.js                   # Central environment config
+│   ├── db.js                       # Native MongoDB connection
 │   ├── utils/
-│   │   ├── auth.js               # Password hashing (scrypt) + UUID token generation
-│   │   └── httpError.js          # HttpError class + async handler wrapper
+│   │   ├── auth.js                 # Password hashing + UUID token gen
+│   │   └── httpError.js            # HTTP error classes
 │   ├── services/
-│   │   ├── aiService.js          # Groq-powered interview AI
-│   │   ├── aiUsageService.js     # AI usage tracking
-│   │   ├── transcriber.js        # Whisper speech-to-text
-│   │   ├── mediaService.js       # ffmpeg audio/video processing
-│   │   ├── resumeParser.js       # PDF text extraction
-│   │   ├── emailService.js       # Raw SMTP password reset emails
-│   │   └── pdfReports.js         # PDFKit report generation
+│   │   ├── aiService.js            # Groq interview AI
+│   │   ├── aiUsageService.js       # AI call tracking
+│   │   ├── transcriber.js          # Whisper STT
+│   │   ├── mediaService.js         # ffmpeg processing
+│   │   ├── resumeParser.js         # PDF text extraction
+│   │   ├── emailService.js         # Raw SMTP emails
+│   │   └── pdfReports.js           # PDFKit report generation
 │   └── aptitude/
 │       ├── config/
-│       │   ├── db.js             # Mongoose connection
-│       │   └── mongoose.js       # CommonJS bridge
+│       │   ├── db.js               # Mongoose connection
+│       │   └── mongoose.js         # CommonJS bridge
 │       ├── middleware/
-│       │   ├── auth.js           # JWT verification + role-based guards
-│       │   └── errorHandler.js   # Global error handler
+│       │   ├── auth.js             # JWT verification + role guards
+│       │   └── errorHandler.js     # Global error handler
 │       ├── models/
-│       │   ├── User.js           # Mongoose User schema
-│       │   ├── Assessment.js     # Assessment schema
-│       │   ├── Question.js       # MCQ question schema
+│       │   ├── User.js             # User schema
+│       │   ├── Assessment.js
+│       │   ├── Question.js
 │       │   ├── AssessmentAttempt.js
 │       │   └── StudentAnswer.js
 │       ├── routes/
-│       │   ├── authRoutes.js     # Authentication endpoints
-│       │   ├── studentRoutes.js  # Student portal endpoints
-│       │   ├── adminRoutes.js    # Admin management endpoints
-│       │   └── masterAdminRoutes.js  # Master admin endpoints
+│       │   ├── authRoutes.js
+│       │   ├── studentRoutes.js
+│       │   ├── adminRoutes.js
+│       │   └── masterAdminRoutes.js
 │       ├── services/
-│       │   ├── aiService.js      # AI/algorithmic question generation
-│       │   ├── scoringService.js # Attempt evaluation + scoring
-│       │   └── fileTextService.js # PDF/DOCX/TXT text extraction
+│       │   ├── aiService.js        # Question generation
+│       │   ├── scoringService.js   # Attempt evaluation
+│       │   └── fileTextService.js  # File text extraction
 │       └── utils/
-│           ├── roles.js          # Role enum + email-based assignment
-│           ├── constants.js      # 20 concepts, difficulties, statuses
-│           ├── httpError.js      # HTTP error factory functions
-│           ├── asyncHandler.js   # Express async error wrapper
-│           └── questionValidation.js  # Question validation + serialization
-├── .env                          # Environment variables
+│           ├── roles.js            # Role enum + email assignment
+│           ├── constants.js        # Concepts, difficulties, statuses
+│           ├── httpError.js        # HTTP error factory
+│           ├── asyncHandler.js     # Express async wrapper
+│           └── questionValidation.js
+├── .env
 └── package.json
 ```
 
 ---
 
-## 🔒 Security
-
-- **Password hashing:** bcrypt (cost 12) with legacy scrypt migration support
-- **JWT tokens:** 7-day expiry, signed with configurable secret
-- **Sensitive fields:** `password_hash`, `password_salt`, `password_reset_token_hash` excluded from query results by default (`select: false`)
-- **API key storage:** Keys stored in `.env` file (persisted) and runtime memory; masked in API responses
-- **CORS:** Configurable origin via `CLIENT_URL`
-- **Helmet:** Security headers applied globally
-- **Multer limits:** File uploads limited to 5-8 MB depending on endpoint
-- **Input validation:** Question validation helpers ensure data integrity
-- **Error handling:** Centralized error handler prevents stack traces in production
-
----
-
-## 📜 Scripts
+## Scripts
 
 | Command | Description |
 |---|---|
-| `npm run dev` | Start with file watching (`node --watch`) |
+| `npm run dev` | Development with file watching |
 | `npm start` | Production start |
 | `npm install` | Install dependencies |
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the ISC License.
+ISC
