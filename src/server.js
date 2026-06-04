@@ -27,7 +27,7 @@ import {
 } from "./services/mediaService.js";
 import { generateAtsPdf, generatePerformancePdf } from "./services/pdfReports.js";
 import { HttpError, asyncHandler } from "./utils/httpError.js";
-import { requireAuth } from "./aptitude/middleware/auth.js";
+import { requireAuth, requireModuleAccess } from "./aptitude/middleware/auth.js";
 
 const app = express();
 const upload = multer({
@@ -261,7 +261,7 @@ app.get("/api/me", asyncHandler(async (req, res) => {
   });
 }));
 
-app.post("/api/start", requireAuth, upload.single("file"), asyncHandler(async (req, res) => {
+app.post("/api/start", requireAuth, requireModuleAccess('ai_interview'), upload.single("file"), asyncHandler(async (req, res) => {
   const { domain, role } = req.body;
 
   if (!domain || !role) {
@@ -311,7 +311,7 @@ app.post("/api/start", requireAuth, upload.single("file"), asyncHandler(async (r
   });
 }));
 
-app.post("/api/answer_text", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/answer_text", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { session_id: sessionId, answer } = req.body || {};
 
   if (!sessionId || typeof answer !== "string") {
@@ -321,7 +321,7 @@ app.post("/api/answer_text", requireAuth, asyncHandler(async (req, res) => {
   res.json(await handleAnswer({ sessionId, answer, user: req.user }));
 }));
 
-app.post("/api/answer_video", requireAuth, upload.single("video"), asyncHandler(async (req, res) => {
+app.post("/api/answer_video", requireAuth, requireModuleAccess('ai_interview'), upload.single("video"), asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body;
 
   if (!sessionId || !req.file) {
@@ -346,7 +346,7 @@ app.post("/api/answer_video", requireAuth, upload.single("video"), asyncHandler(
   }
 }));
 
-app.post("/api/answer_video_with_audio", requireAuth, upload.fields([
+app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_interview'), upload.fields([
   { name: "video", maxCount: 1 },
   { name: "audio", maxCount: 1 }
 ]), asyncHandler(async (req, res) => {
@@ -379,7 +379,7 @@ app.post("/api/answer_video_with_audio", requireAuth, upload.fields([
   }
 }));
 
-app.post("/api/end", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body || {};
 
   if (!sessionId) {
@@ -489,7 +489,7 @@ app.post("/api/end", requireAuth, asyncHandler(async (req, res) => {
   res.json(report);
 }));
 
-app.get("/api/reports", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/reports", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { reports } = collections();
   const query = ["admin", "master_admin"].includes(req.user.role)
     ? {}
@@ -532,7 +532,7 @@ app.get("/api/reports", requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
-app.get("/api/report/:session_id", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/report/:session_id", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { reports } = collections();
   const report = await reports.findOne({ session_id: req.params.session_id }, { projection: { _id: 0 } });
 
@@ -546,7 +546,7 @@ app.get("/api/report/:session_id", requireAuth, asyncHandler(async (req, res) =>
   res.json(report);
 }));
 
-app.get("/api/report/:session_id/pdf", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/report/:session_id/pdf", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { reports } = collections();
   const report = await reports.findOne({ session_id: req.params.session_id }, { projection: { _id: 0 } });
 
@@ -563,7 +563,7 @@ app.get("/api/report/:session_id/pdf", requireAuth, asyncHandler(async (req, res
   res.send(pdf);
 }));
 
-app.get("/api/report/:session_id/ats", requireAuth, asyncHandler(async (req, res) => {
+app.get("/api/report/:session_id/ats", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { reports } = collections();
   const report = await reports.findOne({ session_id: req.params.session_id }, { projection: { _id: 0 } });
 
@@ -733,7 +733,12 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-start().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+export default app;
+
+const isVercel = process.env.VERCEL === '1';
+if (!isVercel) {
+  start().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

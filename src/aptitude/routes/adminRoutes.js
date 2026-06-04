@@ -1,6 +1,6 @@
 import express from 'express';
 import multer from 'multer';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
 import { Assessment } from '../models/Assessment.js';
 import { AssessmentAttempt } from '../models/AssessmentAttempt.js';
 import { Question } from '../models/Question.js';
@@ -123,34 +123,51 @@ router.get(
   '/dashboard',
   asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(parseNumber(req.query.limit, 25), 1), 100);
-    const [assessments, published, students, submittedCount, inProgressCount, submissions] =
-      await Promise.all([
-      Assessment.countDocuments({ is_deleted: { $ne: true } }),
-      Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
-      User.countDocuments({ role: 'student' }),
-      AssessmentAttempt.countDocuments({ status: 'submitted' }),
-      AssessmentAttempt.countDocuments({ status: 'in_progress' }),
-      AssessmentAttempt.find({ status: 'submitted' })
-        .populate('student_id', 'name email')
-        .populate('assessment_id', 'title concept difficulty total_marks passing_marks duration_minutes')
-        .sort({ submitted_at: -1 })
-        .limit(limit),
-    ]);
-    const { reports } = collections();
-    const interviewReports = await reports.find({}, {
-      projection: {
-        _id: 0,
-        session_id: 1,
-        report_id: 1,
-        generated_date: 1,
-        student_name: 1,
-        student_email: 1,
-        interview_domain: 1,
-        interview_role: 1,
-        overall: 1,
-        ats_analysis: 1,
-      }
-    }).sort({ generated_date: -1 }).limit(limit).toArray();
+    const userModules = req.user.modules_access || ['both'];
+    const hasAptitude = userModules.includes('aptitude') || userModules.includes('both');
+    const hasInterview = userModules.includes('ai_interview') || userModules.includes('both');
+
+    let assessments = 0, published = 0, students = 0, submittedCount = 0, inProgressCount = 0;
+    let submissions = [], interviewReports = [];
+
+    if (hasAptitude) {
+      const aptitudeResults = await Promise.all([
+        Assessment.countDocuments({ is_deleted: { $ne: true } }),
+        Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
+        AssessmentAttempt.countDocuments({ status: 'submitted' }),
+        AssessmentAttempt.countDocuments({ status: 'in_progress' }),
+        AssessmentAttempt.find({ status: 'submitted' })
+          .populate('student_id', 'name email')
+          .populate('assessment_id', 'title concept difficulty total_marks passing_marks duration_minutes')
+          .sort({ submitted_at: -1 })
+          .limit(limit),
+      ]);
+      assessments = aptitudeResults[0];
+      published = aptitudeResults[1];
+      submittedCount = aptitudeResults[2];
+      inProgressCount = aptitudeResults[3];
+      submissions = aptitudeResults[4];
+    }
+
+    students = await User.countDocuments({ role: 'student' });
+
+    if (hasInterview) {
+      const { reports } = collections();
+      interviewReports = await reports.find({}, {
+        projection: {
+          _id: 0,
+          session_id: 1,
+          report_id: 1,
+          generated_date: 1,
+          student_name: 1,
+          student_email: 1,
+          interview_domain: 1,
+          interview_role: 1,
+          overall: 1,
+          ats_analysis: 1,
+        }
+      }).sort({ generated_date: -1 }).limit(limit).toArray();
+    }
 
     const analytics = submissions.map(serializeAttemptAnalytics);
 
@@ -197,6 +214,7 @@ router.get(
 
 router.get(
   '/analytics/aptitude',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (_req, res) => {
     const attempts = await AssessmentAttempt.find({ status: 'submitted' })
       .populate('student_id', 'name email')
@@ -245,6 +263,7 @@ router.get(
 
 router.get(
   '/analytics/interviews',
+  requireModuleAccess('ai_interview'),
   asyncHandler(async (_req, res) => {
     const { reports } = collections();
     const interviewReports = await reports.find({}, {
@@ -295,6 +314,7 @@ router.get(
 
 router.post(
   '/assessments/generate',
+  requireModuleAccess('aptitude'),
   upload.single('file'),
   asyncHandler(async (req, res) => {
     const config = parseAssessmentPayload(req.body);
@@ -349,6 +369,7 @@ router.post(
 
 router.get(
   '/assessments',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (_req, res) => {
     const assessments = await Assessment.find({ is_deleted: { $ne: true } }).sort({ created_at: -1 });
     res.json({ assessments: await Promise.all(assessments.map(serializeAssessment)) });
@@ -357,6 +378,7 @@ router.get(
 
 router.post(
   '/assessments',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const config = parseAssessmentPayload(req.body);
     const assessment = await Assessment.create({
@@ -377,6 +399,7 @@ router.post(
 
 router.get(
   '/assessments/:id',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
@@ -390,6 +413,7 @@ router.get(
 
 router.patch(
   '/assessments/:id',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
@@ -421,6 +445,7 @@ router.patch(
 
 router.delete(
   '/assessments/:id',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
@@ -435,6 +460,7 @@ router.delete(
 
 router.patch(
   '/assessments/:id/status',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
@@ -448,6 +474,7 @@ router.patch(
 
 router.patch(
   '/assessments/:id/extend-duration',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const minutes = parseNumber(req.body.minutes);
     if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {
@@ -466,6 +493,7 @@ router.patch(
 
 router.put(
   '/assessments/:id/questions',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
@@ -493,6 +521,7 @@ router.put(
 
 router.get(
   '/assessments/:id/results',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment) throw notFound('Assessment not found');
@@ -520,6 +549,7 @@ router.get(
 
 router.patch(
   '/attempts/:attemptId/extend',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const minutes = parseNumber(req.body.minutes);
     if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {

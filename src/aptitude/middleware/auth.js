@@ -39,3 +39,19 @@ export function requireRole(...roles) {
     next();
   };
 }
+
+export function requireModuleAccess(...modules) {
+  return (req, _res, next) => {
+    if (!req.user) {
+      return next(unauthorized());
+    }
+    const userModules = req.user.modules_access || ['both'];
+    const hasAccess = modules.some(
+      (mod) => userModules.includes(mod) || userModules.includes('both'),
+    );
+    if (!hasAccess) {
+      return next(forbidden('You do not have access to this module'));
+    }
+    next();
+  };
+}

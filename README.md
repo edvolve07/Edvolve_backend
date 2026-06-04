@@ -20,100 +20,81 @@
 ## System Architecture
 
 ```mermaid
-graph TB
-    subgraph Client["Client Layer"]
-        F[Frontend - Vite/React]
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '28px'}}}%%
+graph LR
+    subgraph Client["Client"]
+        F["Frontend (Vite/React)"]
     end
 
-    subgraph Gateway["API Gateway"]
-        direction TB
-        EX[Express Server :8000]
-        MW[Middleware Stack]
-        MW --> Helmet
-        MW --> CORS
-        MW --> Morgan
-        MW --> Multer
-    end
-
-    subgraph Routes["Route Modules"]
-        direction TB
-        INT["/api/start, /api/answer, /api/end"]
-        AUTH["/api/auth/*"]
-        STU["/api/student/*"]
-        ADM["/api/admin/*"]
-        MAS["/api/master/*"]
+    subgraph Server["Express Server :8000"]
+        MW["Middleware<br/>(Helmet, CORS, Morgan, Multer)"]
+        R1["Interview Routes<br/>/api/start, answer, end"]
+        R2["Auth Routes<br/>/api/auth/*"]
+        R3["Student Routes<br/>/api/student/*"]
+        R4["Admin Routes<br/>/api/admin/*"]
+        R5["Master Routes<br/>/api/master/*"]
     end
 
     subgraph Services["Services Layer"]
-        direction TB
-        AI[AiService - Groq LLM]
-        STT[Transcriber - Whisper]
-        MED[MediaService - ffmpeg]
-        RES[ResumeParser - PDF]
-        PDF[PDFReports - PDFKit]
-        EMAIL[EmailService - SMTP]
-        SCORE[ScoringService]
-        AIU[AIUsageTracker]
+        AI["AiService (Groq LLM)"]
+        STT["Transcriber (Whisper)"]
+        MED["MediaService (ffmpeg)"]
+        RES["ResumeParser (PDF)"]
+        PDF["PDFReports (PDFKit)"]
+        EMAIL["EmailService (SMTP)"]
+        SCORE["ScoringService"]
     end
 
-    subgraph DB["Data Layer"]
-        direction TB
-        MONGO_NATIVE[(Native Driver<br/>sessions, reports<br/>ai_usage, users)]
-        MONGO_MG[(Mongoose ODM<br/>users, assessments<br/>questions, attempts<br/>answers)]
+    subgraph DB["MongoDB"]
+        N["Native Driver<br/>sessions, reports, ai_usage"]
+        M["Mongoose ODM<br/>users, assessments, questions"]
     end
 
-    F --> EX
-    EX --> MW
-    MW --> Routes
-    Routes --> Services
-    Services --> DB
-    INT --> AI
-    INT --> STT
-    INT --> MED
-    INT --> RES
-    INT --> PDF
-    AUTH --> EMAIL
-    STU --> SCORE
-    ADM --> AI
+    F --> MW
+    MW --> R1 & R2 & R3 & R4 & R5
+    R1 --> AI & STT & MED & RES & PDF
+    R2 --> EMAIL
+    R3 --> SCORE
+    R4 --> AI
+    R1 & R2 & R3 & R4 & R5 --> N & M
 ```
 
 ---
 
-## Request Flow
+## Request Lifecycle
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '28px'}}}%%
 sequenceDiagram
     participant Client as Frontend
     participant MW as Middleware
-    participant Auth as Auth Middleware
+    participant Auth as Auth Guard
     participant Route as Route Handler
-    participant Service as Service Layer
+    participant Svc as Service
     participant DB as MongoDB
 
     Client->>MW: HTTP Request
-    MW->>MW: Helmet, CORS, Logging
+    MW->>MW: Helmet + CORS + Logging
     MW->>Auth: JWT Verification
 
     alt Public Route
-        Auth->>Route: Skip auth
+        Auth->>Route: Pass through
     else Protected Route
-        Auth->>Auth: Verify JWT
-        Auth->>Auth: Check is_active
-        Auth->>Auth: Check role
+        Auth->>Auth: Verify JWT + is_active + role
         alt Inactive User
             Auth-->>Client: 423 Locked
         else Wrong Role
             Auth-->>Client: 403 Forbidden
         else Valid
-            Auth->>Route: Attach req.user
+            Auth->>Route: Attach user
         end
     end
 
-    Route->>Service: Process request
-    Service->>DB: Query / Write
-    DB-->>Service: Result
-    Service-->>Route: Response data
-    Route-->>Client: JSON Response
+    Route->>Svc: Process Request
+    Svc->>DB: Query / Write
+    DB-->>Svc: Result
+    Svc-->>Route: Response
+    Route-->>Client: JSON
 ```
 
 ---
@@ -121,32 +102,28 @@ sequenceDiagram
 ## AI Pipeline
 
 ```mermaid
-graph LR
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '28px'}}}%%
+graph TD
     subgraph Interview["Interview Pipeline"]
-        direction TB
-        I1[Upload Resume] --> I2[ATS Analysis - Groq]
-        I2 --> I3[Generate Question - Groq]
-        I3 --> I4[Record Answer]
-        I4 --> I5[Transcribe - Whisper]
-        I5 --> I6[Evaluate - Groq 5 Metrics]
-        I6 --> I7[Next Question / Report]
+        I1["Upload Resume"] --> I2["ATS Analysis (Groq)"]
+        I2 --> I3["Generate Question (Groq)"]
+        I3 --> I4["Record + Transcribe (Whisper)"]
+        I4 --> I5["Evaluate 5 Metrics (Groq)"]
+        I5 --> I6["Next Question or Final Report"]
     end
 
     subgraph Aptitude["Aptitude Pipeline"]
-        direction TB
-        A1[Configure Assessment] --> A2{Generation Mode}
-        A2 -->|Fast| A3[Algorithmic Templates<br/>20 Concept Categories]
-        A2 -->|AI| A4[AI Provider<br/>NVIDIA / OpenAI / Generic]
-        A3 --> A5[Questions + Answer Key]
-        A4 --> A5
-        A5 --> A6[Student Attempt]
-        A6 --> A7[Auto-Scoring]
+        A1["Configure Assessment"] --> A2{Generation Mode}
+        A2 -->|Fast| A3["Algorithmic (20 Templates)"]
+        A2 -->|AI| A4["NVIDIA / OpenAI / Generic"]
+        A3 & A4 --> A5["Questions + Answer Key"]
+        A5 --> A6["Student Attempt"]
+        A6 --> A7["Auto-Scoring"]
     end
 
     subgraph Tracking["Usage Tracking"]
-        T1[ai_usage Collection]
-        T2[30-Day Aggregation]
-        T3[Master Dashboard]
+        T1["ai_usage Collection"]
+        T2["30-Day Dashboard Aggregation"]
     end
 
     Interview --> Tracking
@@ -158,6 +135,7 @@ graph LR
 ## Database Relationships
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '28px'}}}%%
 erDiagram
     User ||--o{ Assessment : creates
     Assessment ||--o{ Question : contains
@@ -170,7 +148,7 @@ erDiagram
         ObjectId id
         string name
         string email
-        string role "student | admin | master_admin"
+        string role
         boolean is_active
     }
 
@@ -182,20 +160,15 @@ erDiagram
         int duration_minutes
         int total_marks
         int passing_marks
-        string status "draft | published"
+        string status
     }
 
     Question {
         ObjectId id
         ObjectId assessment_id
         string question_text
-        string option_a
-        string option_b
-        string option_c
-        string option_d
-        string correct_option "A|B|C|D"
-        string concept
-        string difficulty
+        string option_a_d
+        string correct_option
         int marks
         int negative_marks
     }
@@ -206,17 +179,16 @@ erDiagram
         ObjectId student_id
         datetime started_at
         datetime submitted_at
-        int extra_time_minutes
         float score
         float percentage
-        string status "in_progress | submitted"
+        string status
     }
 
     StudentAnswer {
         ObjectId id
         ObjectId attempt_id
         ObjectId question_id
-        string selected_option "A|B|C|D|null"
+        string selected_option
         boolean is_correct
         float marks_awarded
     }
@@ -226,50 +198,24 @@ erDiagram
 
 ## Database Strategy
 
-The backend uses **two MongoDB connection strategies**:
-
-| Strategy | Usage | Collections |
+| Strategy | Used For | Collections |
 |---|---|---|
 | **Native Driver** | Interview system, legacy auth, AI tracking | `sessions`, `reports`, `ai_usage`, `users` |
-| **Mongoose ODM** | Aptitude assessment sub-system with schema validation | `users`, `assessments`, `questions`, `assessmentAttempts`, `studentAnswers` |
+| **Mongoose ODM** | Aptitude sub-system with schema validation | `users`, `assessments`, `questions`, `attempts`, `answers` |
 
 ---
 
 ## Role Hierarchy
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '28px'}}}%%
 graph BT
-    subgraph Roles["Three Role Tiers"]
-        direction BT
-        ST[Student]
-        AD[Admin]
-        SA[Super Admin]
-    end
-
-    subgraph AuthMethods["Authentication Methods"]
-        direction LR
-        JWT[JWT + bcrypt - Mongoose]
-        UUID[UUID + scrypt - Native]
-    end
-
-    ST -->|Can access| JWT
-    AD -->|Can access| JWT
-    SA -->|Can access| JWT
-    ST -->|Legacy| UUID
-
-    subgraph RoutesPerms["Route Access"]
-        direction LR
-        R_STU[/api/student/*]
-        R_ADM[/api/admin/*]
-        R_MAS[/api/master/*]
-    end
-
-    ST --> R_STU
-    AD --> R_ADM
-    AD --> R_STU
-    SA --> R_MAS
-    SA --> R_ADM
-    SA --> R_STU
+    ST["Student"] --> ST_R["/api/student/*"]
+    AD["Admin"] --> AD_R["/api/admin/*"]
+    AD --> ST_R
+    SA["Super Admin"] --> SA_R["/api/master/*"]
+    SA --> AD_R
+    SA --> ST_R
 ```
 
 ---
@@ -283,7 +229,7 @@ graph BT
 | **Databases** | MongoDB 6+ (Native Driver + Mongoose 8) |
 | **Authentication** | JWT (jsonwebtoken) + UUID v4 tokens |
 | **AI / LLMs** | Groq SDK (LLaMA, Mixtral, Whisper) + OpenAI SDK (NVIDIA NIM) |
-| **File Processing** | Multer, pdf-parse, mammoth, pdfkit, ffmpeg + ffprobe |
+| **File Processing** | Multer, pdf-parse, mammoth, pdfkit, ffmpeg |
 | **Security** | Helmet, bcryptjs, CORS |
 | **Email** | Raw SMTP (net/tls) |
 | **Utilities** | xlsx (CSV/Excel bulk import) |
@@ -295,10 +241,10 @@ graph BT
 ### Prerequisites
 
 - Node.js >= 20
-- MongoDB >= 6.0 (local or Atlas)
-- ffmpeg + ffprobe on PATH
-- Groq API key (interview AI + transcription)
-- (Optional) NVIDIA NIM API key for aptitude AI generation
+- MongoDB >= 6.0
+- ffmpeg on PATH
+- Groq API key
+- (Optional) NVIDIA NIM API key
 
 ### Installation
 
@@ -318,74 +264,61 @@ Server starts at **http://localhost:8000**.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `MONGO_URI` | Yes | `mongodb://127.0.0.1:27017/prepup` | Native driver connection string |
-| `MONGODB_URI` | Yes | same as above | Mongoose connection string |
+| `MONGO_URI` | Yes | `mongodb://127.0.0.1:27017/prepup` | Native driver connection |
+| `MONGODB_URI` | Yes | same as above | Mongoose connection |
 | `PORT` | No | `8000` | Server port |
-| `NODE_ENV` | No | `development` | Environment mode |
-| `JWT_SECRET` | Yes | — | Secret key for JWT signing |
-| `JWT_EXPIRES_IN` | No | `7d` | JWT expiration duration |
+| `JWT_SECRET` | Yes | — | JWT signing secret |
 | `CLIENT_URL` | Yes | — | Frontend URL for CORS |
-| `ADMIN_EMAILS` | No | — | Emails auto-assigned `admin` role |
-| `MASTER_ADMIN_EMAILS` | No | — | Emails auto-assigned `master_admin` role |
-| `GROQ_API_KEY` | Yes* | — | Groq API key (interviews, transcription, evaluations) |
-| `NVIDIA_NIM_API_KEY` | No | — | NVIDIA NIM key (aptitude AI generation) |
-| `NVIDIA_NIM_BASE_URL` | No | `https://integrate.api.nvidia.com/v1` | NVIDIA NIM API base |
-| `NVIDIA_NIM_MODEL` | No | `minimaxai/minimax-m2.7` | NVIDIA NIM model |
-| `AI_PROVIDER` | No | `nvidia` | AI provider: `nvidia`, `openai`, or `generic` |
-| `SMTP_HOST` | Yes* | — | SMTP server for emails |
-| `SMTP_USER` | Yes* | — | SMTP login |
-| `SMTP_PASS` | Yes* | — | SMTP password |
-| `SMTP_FROM` | No | — | Sender address |
+| `GROQ_API_KEY` | Yes* | — | Groq API key |
+| `NVIDIA_NIM_API_KEY` | No | — | NVIDIA NIM key |
+| `AI_PROVIDER` | No | `nvidia` | AI provider |
+| `SMTP_HOST` | Yes* | — | SMTP server |
 
-> \* Required only if the corresponding feature is used.
+> \* Required if feature is used.
 
 ---
 
-## API Reference
+## API Endpoints
 
-### Interview System (server.js)
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/` | — | Health check |
-| `GET` | `/api/health` | — | Full health status |
-| `POST` | `/api/signup` | — | Register (UUID token auth) |
-| `POST` | `/api/login` | — | Login (UUID token auth) |
-| `GET` | `/api/me` | Bearer UUID | Current user profile |
-| `POST` | `/api/start` | Bearer UUID | Upload resume, start interview |
-| `POST` | `/api/answer_text` | Bearer UUID | Submit text answer |
-| `POST` | `/api/answer_video` | Bearer UUID | Submit video answer |
-| `POST` | `/api/answer_video_with_audio` | Bearer UUID | Submit separate video + audio |
-| `POST` | `/api/end` | Bearer UUID | Finalize + generate report |
-| `GET` | `/api/reports` | Bearer UUID | List reports |
-| `GET` | `/api/report/:session_id` | Bearer UUID | Get full report |
-| `GET` | `/api/report/:session_id/pdf` | Bearer UUID | Download performance PDF |
-| `GET` | `/api/report/:session_id/ats` | Bearer UUID | Download ATS summary PDF |
-
-### Authentication (authRoutes.js)
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `POST` | `/api/auth/signup` | — | Register (bcrypt) + auto role |
-| `POST` | `/api/auth/login` | — | Login (bcrypt, scrypt fallback) |
-| `POST` | `/api/auth/forgot-password` | — | Send reset email (5-min TTL) |
-| `POST` | `/api/auth/reset-password` | — | Reset with token |
-| `GET` | `/api/auth/me` | JWT | Current user profile |
-
-### Student Routes (studentRoutes.js) — Role: `student`
+### Interview System
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/student/dashboard` | Stats and analytics |
+| `GET` | `/api/health` | Health status |
+| `POST` | `/api/signup` | Register (UUID auth) |
+| `POST` | `/api/login` | Login (UUID auth) |
+| `GET` | `/api/me` | Current user profile |
+| `POST` | `/api/start` | Upload resume, start interview |
+| `POST` | `/api/answer_text` | Submit text answer |
+| `POST` | `/api/answer_video` | Submit video answer |
+| `POST` | `/api/end` | Finalize + generate report |
+| `GET` | `/api/reports` | List reports |
+| `GET` | `/api/report/:id` | Get full report |
+| `GET` | `/api/report/:id/pdf` | Download performance PDF |
+
+### Authentication
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/auth/signup` | Register (bcrypt + JWT) |
+| `POST` | `/api/auth/login` | Login (bcrypt, scrypt fallback) |
+| `POST` | `/api/auth/forgot-password` | Send reset email |
+| `POST` | `/api/auth/reset-password` | Reset password |
+| `GET` | `/api/auth/me` | Current user (JWT) |
+
+### Student Routes — Role: `student`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/student/dashboard` | Stats + analytics |
 | `GET` | `/api/student/assessments` | Published assessments |
-| `POST` | `/api/student/assessments/:id/start` | Start or resume attempt |
-| `GET` | `/api/student/attempts/:id/time` | Remaining time |
+| `POST` | `/api/student/assessments/:id/start` | Start/resume attempt |
 | `PUT` | `/api/student/attempts/:id/answers` | Save answer |
 | `POST` | `/api/student/attempts/:id/submit` | Submit for scoring |
 | `GET` | `/api/student/results` | All results |
-| `GET` | `/api/student/results/:id` | Result with per-question breakdown |
+| `GET` | `/api/student/results/:id` | Detailed result |
 
-### Admin Routes (adminRoutes.js) — Role: `admin`
+### Admin Routes — Role: `admin`
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -393,77 +326,52 @@ Server starts at **http://localhost:8000**.
 | `GET` | `/api/admin/analytics/aptitude` | Per-student analytics |
 | `GET` | `/api/admin/analytics/interviews` | Interview analytics |
 | `POST` | `/api/admin/assessments/generate` | AI/algorithmic generation |
-| `GET` | `/api/admin/assessments` | List all assessments |
+| `GET` | `/api/admin/assessments` | List assessments |
 | `POST` | `/api/admin/assessments` | Create blank assessment |
-| `GET` | `/api/admin/assessments/:id` | Assessment + questions |
-| `PATCH` | `/api/admin/assessments/:id` | Update fields |
-| `DELETE` | `/api/admin/assessments/:id` | Soft-delete |
 | `PATCH` | `/api/admin/assessments/:id/status` | Publish/unpublish |
-| `PATCH` | `/api/admin/assessments/:id/extend-duration` | Add time |
 | `PUT` | `/api/admin/assessments/:id/questions` | Bulk replace questions |
-| `GET` | `/api/admin/assessments/:id/results` | All student results |
-| `PATCH` | `/api/admin/attempts/:id/extend` | Extend student attempt time |
+| `GET` | `/api/admin/assessments/:id/results` | Student results |
+| `PATCH` | `/api/admin/attempts/:id/extend` | Extend attempt time |
 
-### Master Admin Routes (masterAdminRoutes.js) — Role: `master_admin`
+### Master Admin Routes — Role: `master_admin`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/master/dashboard` | User counts + AI usage |
-| `GET` | `/api/master/users` | List/search users (paginated) |
-| `POST` | `/api/master/users` | Create user (single) |
-| `POST` | `/api/master/users/import` | Bulk import via CSV/Excel |
-| `PATCH` | `/api/master/users/:id/role` | Change user role |
-| `PATCH` | `/api/master/users/:id/revoke` | Revoke user access |
-| `PATCH` | `/api/master/users/:id/restore` | Restore user access |
+| `GET` | `/api/master/dashboard` | Usage stats |
+| `GET` | `/api/master/users` | List/search users |
+| `POST` | `/api/master/users` | Create single user |
+| `POST` | `/api/master/users/import` | Bulk import CSV/Excel |
+| `PATCH` | `/api/master/users/:id/role` | Change role |
+| `PATCH` | `/api/master/users/:id/revoke` | Revoke access |
+| `PATCH` | `/api/master/users/:id/restore` | Restore access |
 | `DELETE` | `/api/master/users/:id` | Delete user |
-| `GET` | `/api/master/api-keys` | List API configs (masked) |
+| `GET` | `/api/master/api-keys` | List API configs |
 | `PATCH` | `/api/master/api-keys/:id` | Update API key |
 
 ---
 
-## AI Services
+## AI Models
 
-### Interview AI — Groq
-
-| Model | Purpose | Fallback Order |
+| Model | Provider | Purpose |
 |---|---|---|
-| `llama-3.1-8b-instant` | Primary | 1st |
-| `llama-3.3-70b-versatile` | Fallback | 2nd |
-| `mixtral-8x7b-32768` | Fallback | 3rd |
-
-- Resume ATS analysis (score, skills found, improvements)
-- Dynamic context-aware interview questions
-- 5-dimension answer evaluation: confidence, body language, knowledge, fluency, skill relevance
-- Overall report generation (strengths, weaknesses, tips)
-
-### Speech-to-Text — Groq Whisper
-
-- Model: `whisper-large-v3-turbo`
-- Optimized for technical interview vocabulary
-
-### Aptitude Question Generation
-
-- **Fast mode (default):** Algorithmic generation using 20 concept templates — zero API calls, instant results
-- **AI mode:** Configurable provider (NVIDIA NIM, OpenAI, or generic OpenAI-compatible)
-- Configurable batch size (5) and concurrency (2) with per-question fallback
-- Supports PDF, DOCX, TXT uploads as reference material
-
-### Usage Tracking
-
-Every AI call recorded to `ai_usage` collection with provider, model, feature, token counts, and status. 30-day aggregation available via master admin dashboard.
+| `llama-3.1-8b-instant` | Groq | Primary interview AI |
+| `llama-3.3-70b-versatile` | Groq | Fallback interview AI |
+| `mixtral-8x7b-32768` | Groq | Fallback interview AI |
+| `whisper-large-v3-turbo` | Groq | Speech-to-text |
+| `minimax-m2.7` | NVIDIA NIM | Aptitude generation (default) |
 
 ---
 
 ## Security
 
-- Password hashing: bcrypt (cost 12) with legacy scrypt migration
-- JWT: 7-day expiry, signed with configurable secret
-- Sensitive fields (`password_hash`, `password_salt`, `password_reset_token`) excluded from queries via `select: false`
-- API keys stored in `.env` + runtime memory; masked in responses
+- bcrypt (cost 12) with legacy scrypt migration
+- JWT 7-day expiry with configurable secret
+- Sensitive fields excluded from queries (`select: false`)
+- API keys stored in `.env` + memory, masked in responses
 - CORS restricted to `CLIENT_URL`
-- Helmet security headers applied globally
-- Multer file upload limits: 5–8 MB
-- Centralized error handler prevents stack traces in production
+- Helmet security headers globally
+- Multer file limits: 5–8 MB
+- Centralized error handler
 
 ---
 
@@ -472,29 +380,29 @@ Every AI call recorded to `ai_usage` collection with provider, model, feature, t
 ```
 backend/
 ├── src/
-│   ├── server.js                   # Express entry point + interview routes
-│   ├── config.js                   # Central environment config
+│   ├── server.js                   # Entry point + interview routes
+│   ├── config.js                   # Environment config
 │   ├── db.js                       # Native MongoDB connection
 │   ├── utils/
-│   │   ├── auth.js                 # Password hashing + UUID token gen
-│   │   └── httpError.js            # HTTP error classes
+│   │   ├── auth.js                 # Password hashing + UUID
+│   │   └── httpError.js            # HTTP error helpers
 │   ├── services/
 │   │   ├── aiService.js            # Groq interview AI
-│   │   ├── aiUsageService.js       # AI call tracking
+│   │   ├── aiUsageService.js       # AI usage tracking
 │   │   ├── transcriber.js          # Whisper STT
 │   │   ├── mediaService.js         # ffmpeg processing
-│   │   ├── resumeParser.js         # PDF text extraction
-│   │   ├── emailService.js         # Raw SMTP emails
-│   │   └── pdfReports.js           # PDFKit report generation
+│   │   ├── resumeParser.js         # PDF extraction
+│   │   ├── emailService.js         # SMTP emails
+│   │   └── pdfReports.js           # PDFKit reports
 │   └── aptitude/
 │       ├── config/
 │       │   ├── db.js               # Mongoose connection
 │       │   └── mongoose.js         # CommonJS bridge
 │       ├── middleware/
-│       │   ├── auth.js             # JWT verification + role guards
+│       │   ├── auth.js             # JWT + role guards
 │       │   └── errorHandler.js     # Global error handler
 │       ├── models/
-│       │   ├── User.js             # User schema
+│       │   ├── User.js
 │       │   ├── Assessment.js
 │       │   ├── Question.js
 │       │   ├── AssessmentAttempt.js
@@ -506,13 +414,13 @@ backend/
 │       │   └── masterAdminRoutes.js
 │       ├── services/
 │       │   ├── aiService.js        # Question generation
-│       │   ├── scoringService.js   # Attempt evaluation
-│       │   └── fileTextService.js  # File text extraction
+│       │   ├── scoringService.js   # Attempt scoring
+│       │   └── fileTextService.js  # File extraction
 │       └── utils/
-│           ├── roles.js            # Role enum + email assignment
-│           ├── constants.js        # Concepts, difficulties, statuses
-│           ├── httpError.js        # HTTP error factory
-│           ├── asyncHandler.js     # Express async wrapper
+│           ├── roles.js
+│           ├── constants.js
+│           ├── httpError.js
+│           ├── asyncHandler.js
 │           └── questionValidation.js
 ├── .env
 └── package.json
@@ -526,7 +434,6 @@ backend/
 |---|---|
 | `npm run dev` | Development with file watching |
 | `npm start` | Production start |
-| `npm install` | Install dependencies |
 
 ---
 

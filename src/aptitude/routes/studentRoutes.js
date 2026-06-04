@@ -1,5 +1,5 @@
 import express from 'express';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
 import { Assessment } from '../models/Assessment.js';
 import { AssessmentAttempt } from '../models/AssessmentAttempt.js';
 import { Question } from '../models/Question.js';
@@ -47,14 +47,28 @@ router.get(
   asyncHandler(async (req, res) => {
     const { reports } = collections();
     const studentId = req.user._id.toString();
-    const [available, submittedCount, attempts, interviewReports] = await Promise.all([
-      Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
-      AssessmentAttempt.countDocuments({ student_id: req.user._id, status: 'submitted' }),
-      AssessmentAttempt.find({ student_id: req.user._id, status: 'submitted' }).populate(
-        'assessment_id',
-        'title concept difficulty passing_marks total_marks duration_minutes',
-      ),
-      reports
+    const userModules = req.user.modules_access || ['both'];
+    const hasAptitude = userModules.includes('aptitude') || userModules.includes('both');
+    const hasInterview = userModules.includes('ai_interview') || userModules.includes('both');
+
+    let available = 0, submittedCount = 0, attempts = [], interviewReports = [];
+
+    if (hasAptitude) {
+      const aptitudeResults = await Promise.all([
+        Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
+        AssessmentAttempt.countDocuments({ student_id: req.user._id, status: 'submitted' }),
+        AssessmentAttempt.find({ student_id: req.user._id, status: 'submitted' }).populate(
+          'assessment_id',
+          'title concept difficulty passing_marks total_marks duration_minutes',
+        ),
+      ]);
+      available = aptitudeResults[0];
+      submittedCount = aptitudeResults[1];
+      attempts = aptitudeResults[2];
+    }
+
+    if (hasInterview) {
+      interviewReports = await reports
         .find(
           { student_id: studentId },
           {
@@ -73,8 +87,8 @@ router.get(
         )
         .sort({ created_at: -1 })
         .limit(25)
-        .toArray(),
-    ]);
+        .toArray();
+    }
 
     const attemptAnalytics = attempts
       .sort((a, b) => new Date(b.submitted_at || 0) - new Date(a.submitted_at || 0))
@@ -174,6 +188,7 @@ router.get(
 
 router.get(
   '/assessments',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (_req, res) => {
     const assessments = await Assessment.find({
       status: 'published',
@@ -185,6 +200,7 @@ router.get(
 
 router.post(
   '/assessments/:id/start',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
@@ -225,6 +241,7 @@ router.post(
 
 router.get(
   '/attempts/:attemptId/time',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const attempt = await AssessmentAttempt.findById(req.params.attemptId).populate(
       'assessment_id',
@@ -248,6 +265,7 @@ router.get(
 
 router.put(
   '/attempts/:attemptId/answers',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const { question_id, selected_option } = req.body;
     if (!['A', 'B', 'C', 'D', null].includes(selected_option)) {
@@ -276,6 +294,7 @@ router.put(
 
 router.post(
   '/attempts/:attemptId/submit',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const attempt = await AssessmentAttempt.findById(req.params.attemptId);
     if (!attempt) throw notFound('Attempt not found');
@@ -296,6 +315,7 @@ router.post(
 
 router.get(
   '/results',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const attempts = await AssessmentAttempt.find({
       student_id: req.user._id,
@@ -323,6 +343,7 @@ router.get(
 
 router.get(
   '/results/:attemptId',
+  requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
     const attempt = await AssessmentAttempt.findById(req.params.attemptId).populate(
       'assessment_id',

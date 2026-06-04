@@ -335,7 +335,7 @@ router.get(
   '/admins-list',
   asyncHandler(async (_req, res) => {
     const admins = await User.find({
-      role: { $in: [ROLES.ADMIN, ROLES.MASTER_ADMIN] },
+      role: ROLES.ADMIN,
     })
       .select('name email phone organization modules_access')
       .sort({ name: 1 });
@@ -887,6 +887,25 @@ router.patch(
     if (!user) throw notFound('User not found');
 
     user.role = role;
+    await user.save();
+    res.json({ user: serializeUser(user) });
+  }),
+);
+
+router.patch(
+  '/users/:id/modules',
+  asyncHandler(async (req, res) => {
+    const modules = req.body.modules_access;
+    if (!Array.isArray(modules) || modules.length === 0) {
+      throw badRequest('Invalid modules', ['modules_access must be a non-empty array']);
+    }
+    const valid = modules.every((m) => MODULE_OPTIONS.includes(m));
+    if (!valid) throw badRequest('Invalid module', ['Valid modules: ai_interview, aptitude, both']);
+
+    const user = await User.findById(req.params.id);
+    if (!user) throw notFound('User not found');
+
+    user.modules_access = modules.includes('both') ? ['both'] : modules;
     await user.save();
     res.json({ user: serializeUser(user) });
   }),

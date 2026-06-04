@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError, badRequest, locked, unauthorized } from '../utils/httpError.js';
-import { normalizeEmail, roleForEmail } from '../utils/roles.js';
+import { normalizeEmail, roleForEmail, ROLES } from '../utils/roles.js';
 import { verifyPassword } from '../../utils/auth.js';
 import {
   RESET_TOKEN_TTL_MINUTES,
@@ -94,7 +94,7 @@ router.post(
       user.password_salt = undefined;
     }
 
-    if (user.role !== configuredRole) {
+    if (configuredRole !== ROLES.STUDENT && user.role !== configuredRole) {
       user.role = configuredRole;
     }
 
