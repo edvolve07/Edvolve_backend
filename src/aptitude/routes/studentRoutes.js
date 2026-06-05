@@ -16,6 +16,7 @@ router.use(requireAuth, requireRole('student'));
 
 async function serializeAssessment(assessment) {
   const totalQuestions = await Question.countDocuments({ assessment_id: assessment._id });
+  const start_time = assessment.start_time ? new Date(assessment.start_time) : null;
   return {
     id: assessment._id.toString(),
     title: assessment.title,
@@ -194,6 +195,8 @@ router.get(
       status: 'published',
       is_deleted: { $ne: true },
     }).sort({ created_at: -1 });
+
+    console.log(`Fetched ${assessments} published assessments for student dashboard`);
     res.json({ assessments: await Promise.all(assessments.map(serializeAssessment)) });
   }),
 );
