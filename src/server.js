@@ -4,6 +4,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import multer from "multer";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
 import { config } from "./config.js";
@@ -17,7 +18,7 @@ import studentRoutes from "./aptitude/routes/studentRoutes.js";
 import { aiService } from "./services/aiService.js";
 import { extractTextFromPdf } from "./services/resumeParser.js";
 import { transcriber } from "./services/transcriber.js";
-import { issueSignedToken } from "@vercel/blob";
+import { handleUpload } from "@vercel/blob/client";
 import {
   analyzeVideo,
   cleanupFiles,
@@ -328,6 +329,21 @@ app.post("/api/answer_text", requireAuth, requireModuleAccess('ai_interview'), a
   res.json(await handleAnswer({ sessionId, answer, user: req.user }));
 }));
 
+app.post("/api/handle-upload", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
+  const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
+  if (!blobToken) throw new HttpError(501, "Vercel Blob not configured");
+  const result = await handleUpload({
+    token: blobToken,
+    request: req,
+    body: req.body,
+    onBeforeGenerateToken: async () => ({
+      allowedContentTypes: ['audio/webm', 'video/webm', 'audio/ogg', 'video/mp4', 'audio/mp4'],
+      maximumSizeInBytes: config.maxVideoSize,
+    }),
+  });
+  res.json(result);
+}));
+
 app.post("/api/answer_video", requireAuth, requireModuleAccess('ai_interview'), upload.single("video"), asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body;
 
@@ -353,29 +369,50 @@ app.post("/api/answer_video", requireAuth, requireModuleAccess('ai_interview'), 
   }
 }));
 
-app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_interview'), upload.fields([
-  { name: "video", maxCount: 1 },
-  { name: "audio", maxCount: 1 }
-]), asyncHandler(async (req, res) => {
+async function downloadAndSave(url, suffix) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new HttpError(502, `Failed to download blob: ${response.status}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const safeSuffix = suffix || "";
+  const tempPath = `/tmp/prepup-${Date.now()}-${Math.random().toString(16).slice(2)}${safeSuffix}`;
+  await fs.writeFile(tempPath, buffer);
+  return tempPath;
+}
+
+app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_interview'), (req, res, next) => {
+  if (req.body?.videoUrl || req.body?.audioUrl) return next();
+  upload.fields([
+    { name: "video", maxCount: 1 },
+    { name: "audio", maxCount: 1 }
+  ])(req, res, next);
+}, asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body;
+  const videoUrl = req.body?.videoUrl;
+  const audioUrl = req.body?.audioUrl;
   const videoFile = req.files?.video?.[0];
   const audioFile = req.files?.audio?.[0];
 
-  if (!sessionId || !videoFile || !audioFile) {
-    throw new HttpError(400, "session_id, video, and audio are required");
-  }
-  // console.log(videoFile.size)
+  let videoPath, rawAudioPath;
 
-  if (videoFile.size > config.maxVideoSize) {
-    throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
+  if (videoUrl && audioUrl) {
+    if (!sessionId) throw new HttpError(400, "session_id is required");
+    videoPath = await downloadAndSave(videoUrl, ".webm");
+    rawAudioPath = await downloadAndSave(audioUrl, ".webm");
+  } else {
+    if (!sessionId || !videoFile || !audioFile) {
+      throw new HttpError(400, "session_id, video, and audio are required");
+    }
+    if (videoFile.size > config.maxVideoSize) {
+      throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
+    }
+    if (audioFile.size > 50 * 1024 * 1024) {
+      throw new HttpError(400, "Audio exceeds 50MB");
+    }
+    videoPath = await writeTempFile(videoFile, fileExtension(videoFile, ".webm"));
+    rawAudioPath = await writeTempFile(audioFile, fileExtension(audioFile, ".webm"));
   }
-
-  if (audioFile.size > 50 * 1024 * 1024) {
-    throw new HttpError(400, "Audio exceeds 50MB");
-  }
-
-  const videoPath = await writeTempFile(videoFile, fileExtension(videoFile, ".webm"));
-  const rawAudioPath = await writeTempFile(audioFile, fileExtension(audioFile, ".webm"));
 
   try {
     const transcript = await transcriber.transcribe(rawAudioPath);
