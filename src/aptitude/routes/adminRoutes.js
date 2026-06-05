@@ -377,6 +377,8 @@ router.post(
       created_by: req.user._id,
     });
 
+    console.log(`Created assessment ${assessment.start_time} with title "${assessment.title}" and ${validation.questions.length} questions`);
+
     await Question.insertMany(
       validation.questions.map((question) => ({
         ...question,
