@@ -15,8 +15,18 @@ const router = express.Router();
 router.use(requireAuth, requireRole('student'));
 
 async function serializeAssessment(assessment) {
-  const totalQuestions = await Question.countDocuments({ assessment_id: assessment._id });
-  const start_time = assessment.start_time ? new Date(assessment.start_time) : null;
+  const totalQuestions = await Question.countDocuments({
+    assessment_id: assessment._id,
+  });
+
+  const subtract530 = (date) => {
+    if (!date) return null;
+
+    const d = new Date(date);
+    d.setMinutes(d.getMinutes() - 330); 
+    return d;
+  };
+
   return {
     id: assessment._id.toString(),
     title: assessment.title,
@@ -25,12 +35,11 @@ async function serializeAssessment(assessment) {
     duration_minutes: assessment.duration_minutes,
     total_marks: assessment.total_marks,
     passing_marks: assessment.passing_marks,
-    start_time: assessment.start_time,
-    end_time: assessment.end_time,
+    start_time: subtract530(assessment.start_time),
+    end_time: subtract530(assessment.end_time),
     total_questions: totalQuestions,
   };
 }
-
 function ensureAvailable(assessment) {
   const now = new Date();
   if (assessment.is_deleted) throw forbidden('Assessment is no longer available');
