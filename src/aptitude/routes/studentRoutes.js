@@ -44,10 +44,22 @@ function ensureAvailable(assessment) {
   const now = new Date();
   if (assessment.is_deleted) throw forbidden('Assessment is no longer available');
   if (assessment.status !== 'published') throw forbidden('Assessment is not published');
-  if (assessment.start_time && now < assessment.start_time) {
+
+ const subtract530 = (date) => {
+    if (!date) return null;
+
+    const d = new Date(date);
+    d.setMinutes(d.getMinutes() - 330); 
+    return d;
+  };
+
+  const check_start_time = subtract530(assessment.start_time);
+  const check_end_time = subtract530(assessment.end_time);
+  
+  if (check_start_time && now < check_start_time) {
     throw forbidden('Assessment has not started yet');
   }
-  if (assessment.end_time && now > assessment.end_time) {
+  if (check_end_time && now > check_end_time) {
     throw forbidden('Assessment has ended');
   }
 }
