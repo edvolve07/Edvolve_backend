@@ -69,7 +69,7 @@ function serializeUser(user) {
     phone: user.phone || '',
     organization: user.organization || '',
     modules_access: user.modules_access || ['both'],
-    assigned_admin: user.assigned_admin ? user.assigned_admin.toString() : null,
+    assigned_admin: user.assigned_admin?._id?.toString() ?? (user.assigned_admin ? user.assigned_admin.toString() : null),
     must_change_password: user.must_change_password !== false,
     role: user.role,
     role_label: roleLabel(user.role),
