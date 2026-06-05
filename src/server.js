@@ -365,13 +365,13 @@ app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_in
   }
   // console.log(videoFile.size)
 
-  // if (videoFile.size > config.maxVideoSize) {
-  //   throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
-  // }
+  if (videoFile.size > config.maxVideoSize) {
+    throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
+  }
 
-  // if (audioFile.size > 50 * 1024 * 1024) {
-  //   throw new HttpError(400, "Audio exceeds 50MB");
-  // }
+  if (audioFile.size > 50 * 1024 * 1024) {
+    throw new HttpError(400, "Audio exceeds 50MB");
+  }
 
   const videoPath = await writeTempFile(videoFile, fileExtension(videoFile, ".webm"));
   const rawAudioPath = await writeTempFile(audioFile, fileExtension(audioFile, ".webm"));
