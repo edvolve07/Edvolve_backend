@@ -424,6 +424,22 @@ app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_in
   }
 }));
 
+app.get("/api/session/:session_id", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
+  const session = await getSession(req.params.session_id);
+  assertCanAccessSession(req.user, session);
+  res.json({
+    session_id: session.session_id,
+    question: session.current_question || "",
+    question_number: session.question_count || 1,
+    status: session.status,
+    domain: session.domain,
+    role: session.role,
+    ats_score: session.ats_analysis?.ats_score,
+    skills_found: (session.ats_analysis?.skills_found || []).slice(0, 5),
+    improvements: (session.ats_analysis?.improvements || []).slice(0, 3),
+  });
+}));
+
 app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body || {};
 
