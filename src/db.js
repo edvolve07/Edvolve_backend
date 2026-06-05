@@ -9,6 +9,12 @@ export async function connectDatabase() {
     return db;
   }
 
+  if (!config.mongoUri) {
+    const error = new Error("MONGO_URI or MONGODB_URI is required");
+    error.statusCode = 503;
+    throw error;
+  }
+
   client = new MongoClient(config.mongoUri, {
     serverApi: {
       version: ServerApiVersion.v1,

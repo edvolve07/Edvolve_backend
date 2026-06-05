@@ -12,13 +12,6 @@ if (!process.env.MONGODB_URI && process.env.MONGO_URI) {
   process.env.MONGODB_URI = process.env.MONGO_URI;
 }
 
-const required = ["MONGO_URI", "GROQ_API_KEY"];
-const missing = required.filter((key) => !process.env[key]);
-
-if (missing.length) {
-  throw new Error(`${missing.join(", ")} missing`);
-}
-
 export const config = {
   mongoUri: process.env.MONGO_URI,
   groqApiKey: process.env.GROQ_API_KEY,

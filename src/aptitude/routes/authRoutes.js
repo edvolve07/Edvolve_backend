@@ -18,9 +18,19 @@ import {
 const router = express.Router();
 
 function signToken(user) {
-  return jwt.sign({ sub: user._id.toString(), role: user.role }, process.env.JWT_SECRET, {
+  return jwt.sign({ sub: user._id.toString(), role: user.role }, getJwtSecret(), {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   });
+}
+
+function getJwtSecret() {
+  if (!process.env.JWT_SECRET) {
+    throw new HttpError(503, 'Authentication service is not configured', [
+      'Set JWT_SECRET in the backend environment',
+    ]);
+  }
+
+  return process.env.JWT_SECRET;
 }
 
 function validateEmail(email) {
@@ -50,6 +60,7 @@ router.post(
     }
     if (password !== confirmPassword) errors.push('Passwords do not match');
     if (errors.length) throw badRequest('Validation failed', errors);
+    getJwtSecret();
 
     const normalizedEmail = normalizeEmail(email);
     const existing = await User.findOne({ email: normalizedEmail });
@@ -72,6 +83,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) throw badRequest('Email and password are required');
+    getJwtSecret();
 
     const normalizedEmail = normalizeEmail(email);
     const user = await User.findOne({ email: normalizedEmail }).select(

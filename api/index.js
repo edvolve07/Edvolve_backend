@@ -1,4 +1,5 @@
-let connected = false;
+let nativeConnected = false;
+let mongooseConnectPromise;
 let serverModule;
 let dbModule;
 let mongooseModule;
@@ -33,6 +34,34 @@ async function loadServer() {
   };
 }
 
+async function connectMongoose(mongoose) {
+  if (mongoose.connection.readyState === 1) return;
+
+  if (!mongooseConnectPromise) {
+    const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
+    if (!mongoUri) {
+      const error = new Error('MONGODB_URI or MONGO_URI is required');
+      error.statusCode = 503;
+      throw error;
+    }
+
+    mongoose.set('strictQuery', true);
+    mongooseConnectPromise = mongoose.connect(mongoUri).catch((error) => {
+      mongooseConnectPromise = null;
+      throw error;
+    });
+  }
+
+  await mongooseConnectPromise;
+}
+
+async function connectNativeDatabase(connectDatabase) {
+  if (nativeConnected) return;
+
+  await connectDatabase();
+  nativeConnected = true;
+}
+
 export default async function handler(req, res) {
   setCorsHeaders(req, res);
 
@@ -43,24 +72,25 @@ export default async function handler(req, res) {
 
   try {
     const { app, connectDatabase, mongoose } = await loadServer();
+    const path = req.url || '';
+    const needsNativeDatabase = !path.startsWith('/api/auth/');
 
-    if (!connected) {
-      const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
-      await connectDatabase();
-      if (mongoose.connection.readyState === 0) {
-        mongoose.set('strictQuery', true);
-        await mongoose.connect(mongoUri);
-      }
-      connected = true;
+    await connectMongoose(mongoose);
+
+    if (needsNativeDatabase) {
+      await connectNativeDatabase(connectDatabase);
     }
 
     app(req, res);
   } catch (error) {
     console.error('[vercel-handler-error]', error);
-    res.status(500).json({
-      detail: 'Internal server error',
-      message: 'Internal server error',
-      details: [],
+    const status = error.status || error.statusCode || 500;
+    const message = status === 500 ? 'Internal server error' : error.message || 'Service unavailable';
+
+    res.status(status).json({
+      detail: message,
+      message,
+      details: Array.isArray(error.details) ? error.details : [],
     });
   }
 }

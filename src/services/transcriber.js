@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import Groq from "groq-sdk";
 import { config } from "../config.js";
+import { HttpError } from "../utils/httpError.js";
 import { recordAiUsage } from "./aiUsageService.js";
 
 class GroqWhisperTranscriber {
   constructor() {
-    this.client = new Groq({ apiKey: config.groqApiKey });
+    this.client = config.groqApiKey ? new Groq({ apiKey: config.groqApiKey }) : null;
   }
 
   setApiKey(apiKey) {
@@ -13,9 +14,17 @@ class GroqWhisperTranscriber {
     this.client = new Groq({ apiKey });
   }
 
+  getClient() {
+    if (!this.client) {
+      throw new HttpError(503, "Groq API key is not configured");
+    }
+
+    return this.client;
+  }
+
   async transcribe(audioPath) {
     try {
-      const response = await this.client.audio.transcriptions.create({
+      const response = await this.getClient().audio.transcriptions.create({
         file: fs.createReadStream(audioPath),
         model: "whisper-large-v3-turbo",
         language: "en",

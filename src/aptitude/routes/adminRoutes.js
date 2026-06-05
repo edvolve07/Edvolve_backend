@@ -127,16 +127,20 @@ router.get(
     const hasAptitude = userModules.includes('aptitude') || userModules.includes('both');
     const hasInterview = userModules.includes('ai_interview') || userModules.includes('both');
 
+    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudentIds = assignedStudents.map((s) => s._id);
+
     let assessments = 0, published = 0, students = 0, submittedCount = 0, inProgressCount = 0;
     let submissions = [], interviewReports = [];
 
     if (hasAptitude) {
+      const studentFilter = assignedStudentIds.length ? { student_id: { $in: assignedStudentIds } } : { student_id: null };
       const aptitudeResults = await Promise.all([
         Assessment.countDocuments({ is_deleted: { $ne: true } }),
         Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
-        AssessmentAttempt.countDocuments({ status: 'submitted' }),
-        AssessmentAttempt.countDocuments({ status: 'in_progress' }),
-        AssessmentAttempt.find({ status: 'submitted' })
+        AssessmentAttempt.countDocuments({ ...studentFilter, status: 'submitted' }),
+        AssessmentAttempt.countDocuments({ ...studentFilter, status: 'in_progress' }),
+        AssessmentAttempt.find({ ...studentFilter, status: 'submitted' })
           .populate('student_id', 'name email')
           .populate('assessment_id', 'title concept difficulty total_marks passing_marks duration_minutes')
           .sort({ submitted_at: -1 })
@@ -149,11 +153,13 @@ router.get(
       submissions = aptitudeResults[4];
     }
 
-    students = await User.countDocuments({ role: 'student' });
+    students = assignedStudentIds.length;
 
     if (hasInterview) {
       const { reports } = collections();
-      interviewReports = await reports.find({}, {
+      const assignedStudentIdStrings = assignedStudents.map((s) => s._id.toString());
+      const reportFilter = assignedStudentIdStrings.length ? { student_id: { $in: assignedStudentIdStrings } } : { student_id: null };
+      interviewReports = await reports.find(reportFilter, {
         projection: {
           _id: 0,
           session_id: 1,
@@ -215,8 +221,12 @@ router.get(
 router.get(
   '/analytics/aptitude',
   requireModuleAccess('aptitude'),
-  asyncHandler(async (_req, res) => {
-    const attempts = await AssessmentAttempt.find({ status: 'submitted' })
+  asyncHandler(async (req, res) => {
+    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudentIds = assignedStudents.map((s) => s._id);
+    const studentFilter = assignedStudentIds.length ? { student_id: { $in: assignedStudentIds } } : { student_id: null };
+
+    const attempts = await AssessmentAttempt.find({ ...studentFilter, status: 'submitted' })
       .populate('student_id', 'name email')
       .populate('assessment_id', 'title concept difficulty total_marks passing_marks duration_minutes')
       .sort({ submitted_at: -1 });
@@ -264,9 +274,13 @@ router.get(
 router.get(
   '/analytics/interviews',
   requireModuleAccess('ai_interview'),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const { reports } = collections();
-    const interviewReports = await reports.find({}, {
+    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudentIdStrings = assignedStudents.map((s) => s._id.toString());
+    const reportFilter = assignedStudentIdStrings.length ? { student_id: { $in: assignedStudentIdStrings } } : { student_id: null };
+
+    const interviewReports = await reports.find(reportFilter, {
       projection: {
         _id: 0,
         session_id: 1,
@@ -526,7 +540,11 @@ router.get(
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment) throw notFound('Assessment not found');
 
-    const attempts = await AssessmentAttempt.find({ assessment_id: assessment._id })
+    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudentIds = assignedStudents.map((s) => s._id);
+    const studentFilter = assignedStudentIds.length ? { student_id: { $in: assignedStudentIds } } : { student_id: null };
+
+    const attempts = await AssessmentAttempt.find({ ...studentFilter, assessment_id: assessment._id })
       .populate('student_id', 'name email')
       .sort({ submitted_at: -1, started_at: -1 });
 

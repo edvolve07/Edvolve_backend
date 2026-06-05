@@ -23,7 +23,7 @@ function clampScore(value) {
 
 class AiService {
   constructor() {
-    this.client = new Groq({ apiKey: config.groqApiKey });
+    this.client = config.groqApiKey ? new Groq({ apiKey: config.groqApiKey }) : null;
     this.models = [
       "llama-3.1-8b-instant",
       "llama-3.3-70b-versatile",
@@ -36,12 +36,21 @@ class AiService {
     this.client = new Groq({ apiKey });
   }
 
+  getClient() {
+    if (!this.client) {
+      throw new HttpError(503, "Groq API key is not configured");
+    }
+
+    return this.client;
+  }
+
   async generateContent(prompt, feature = "interview_chat") {
     let lastError;
+    const client = this.getClient();
 
     for (const model of this.models) {
       try {
-        const response = await this.client.chat.completions.create({
+        const response = await client.chat.completions.create({
           model,
           messages: [{ role: "user", content: prompt }],
           temperature: 0.3
