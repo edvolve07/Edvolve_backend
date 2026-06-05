@@ -28,6 +28,16 @@ function parseNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toUtcDate(value) {
+  if (!value) return null;
+  const str = String(value).trim();
+  if (!str) return null;
+  if (/[Z+-]\d{2}:\d{2}$/.test(str)) {
+    return new Date(str);
+  }
+  return new Date(str + 'Z');
+}
+
 function parseAssessmentPayload(body) {
   const title = String(body.title || '').trim();
   const concept = String(body.concept || '').trim();
@@ -64,8 +74,8 @@ function parseAssessmentPayload(body) {
     negative_marks: negativeMarks,
     passing_marks: passingMarks,
     status,
-    start_time: body.start_time ? new Date(body.start_time) : null,
-    end_time: body.end_time ? new Date(body.end_time) : null,
+    start_time: toUtcDate(body.start_time),
+    end_time: toUtcDate(body.end_time),
     question_count: questionCount,
     generation_mode: generationMode,
   };
@@ -446,9 +456,7 @@ router.patch(
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
         assessment[key] = ['start_time', 'end_time'].includes(key)
-          ? req.body[key]
-            ? new Date(req.body[key])
-            : null
+          ? toUtcDate(req.body[key])
           : req.body[key];
       }
     }
