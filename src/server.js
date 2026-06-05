@@ -17,6 +17,7 @@ import studentRoutes from "./aptitude/routes/studentRoutes.js";
 import { aiService } from "./services/aiService.js";
 import { extractTextFromPdf } from "./services/resumeParser.js";
 import { transcriber } from "./services/transcriber.js";
+import { issueSignedToken } from "@vercel/blob";
 import {
   analyzeVideo,
   cleanupFiles,
