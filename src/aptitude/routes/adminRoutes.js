@@ -32,7 +32,7 @@ function toUtcDate(value) {
   if (!value) return null;
   const str = String(value).trim();
   if (!str) return null;
-  if (/[Z+-]\d{2}:\d{2}$/.test(str)) {
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(str)) {
     return new Date(str);
   }
   return new Date(str + 'Z');
