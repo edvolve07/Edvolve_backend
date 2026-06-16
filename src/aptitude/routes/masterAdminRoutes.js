@@ -96,7 +96,7 @@ function validatePhone(phone) {
 function normalizeModules(value) {
   if (!value) return ['both'];
   const val = String(value).toLowerCase().trim();
-  if (val === 'both' || val === 'ai_interview' || val === 'aptitude') return [val];
+  if (['both', 'ai_interview', 'aptitude', 'programming'].includes(val)) return [val];
   if (val.includes(',')) {
     const parts = val.split(',').map((v) => v.trim().toLowerCase()).filter((v) => MODULE_OPTIONS.includes(v));
     if (parts.includes('both') || parts.length === 0) return ['both'];
@@ -900,13 +900,20 @@ router.patch(
       throw badRequest('Invalid modules', ['modules_access must be a non-empty array']);
     }
     const valid = modules.every((m) => MODULE_OPTIONS.includes(m));
-    if (!valid) throw badRequest('Invalid module', ['Valid modules: ai_interview, aptitude, both']);
+    if (!valid) throw badRequest('Invalid module', ['Valid modules: ai_interview, aptitude, programming, both']);
 
     const user = await User.findById(req.params.id);
     if (!user) throw notFound('User not found');
 
-    user.modules_access = modules.includes('both') ? ['both'] : modules;
+    const normalizedModules = modules.includes('both') ? ['both'] : modules;
+    user.modules_access = normalizedModules;
     await user.save();
+
+    await User.updateMany(
+      { assigned_admin: user._id, role: 'student' },
+      { $set: { modules_access: normalizedModules } },
+    );
+
     res.json({ user: serializeUser(user) });
   }),
 );

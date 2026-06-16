@@ -37,6 +37,15 @@ function validateEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function validatePhone(phone) {
+  return /^[\d\+\-\(\)\s]{7,20}$/.test(String(phone || '').trim());
+}
+
+function cleanProfileField(value, maxLength) {
+  const text = String(value || '').trim();
+  return text.length > maxLength ? text.slice(0, maxLength) : text;
+}
+
 function hashResetToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -201,6 +210,52 @@ router.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     res.json({ user: req.user.toSafeJSON() });
+  }),
+);
+
+router.put(
+  '/profile',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const name = cleanProfileField(req.body.name, 80);
+    const phone = cleanProfileField(req.body.phone, 20);
+    const organization = cleanProfileField(req.body.organization, 120);
+    const interestedRole = cleanProfileField(req.body.interested_role, 80);
+    const profileHeadline = cleanProfileField(req.body.profile_headline, 120);
+    const profileBio = cleanProfileField(req.body.profile_bio, 500);
+    const location = cleanProfileField(req.body.location, 80);
+    const errors = [];
+
+    if (!name || name.length < 2) errors.push('Full name must be at least 2 characters');
+    if (phone && !validatePhone(phone)) errors.push('Phone number is invalid');
+    if (errors.length) throw badRequest('Validation failed', errors);
+
+    if (phone) {
+      const existingByPhone = await User.findOne({
+        phone,
+        _id: { $ne: req.user._id },
+      });
+      if (existingByPhone) {
+        throw badRequest('Phone number is already registered', ['Phone number is already registered']);
+      }
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) throw unauthorized('User not found');
+
+    user.name = name;
+    user.phone = phone;
+    user.organization = organization;
+    user.interested_role = interestedRole;
+    user.profile_headline = profileHeadline;
+    user.profile_bio = profileBio;
+    user.location = location;
+    await user.save();
+
+    res.json({
+      message: 'Profile updated successfully.',
+      user: user.toSafeJSON(),
+    });
   }),
 );
 

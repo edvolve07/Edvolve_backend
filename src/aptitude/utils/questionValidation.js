@@ -63,12 +63,13 @@ export function validateQuestions(rawQuestions, defaults = {}) {
   const questions = rawQuestions.map((raw, index) => {
     const question = normalizeQuestion(raw, defaults);
     const number = index + 1;
+    const normalizedText = question.question_text.toLowerCase().replace(/\s+/g, ' ').trim();
 
     if (!question.question_text) errors.push(`Question ${number}: question text is required`);
-    if (seen.has(question.question_text.toLowerCase())) {
-      errors.push(`Question ${number}: duplicate question text`);
+    if (seen.has(normalizedText)) {
+      errors.push(`Question ${number}: duplicate question text — "${question.question_text.slice(0, 80)}"`);
     }
-    seen.add(question.question_text.toLowerCase());
+    seen.add(normalizedText);
 
     const values = [
       question.option_a,

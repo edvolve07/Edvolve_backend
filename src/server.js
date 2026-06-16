@@ -15,6 +15,13 @@ import authRoutes from "./aptitude/routes/authRoutes.js";
 import adminRoutes from "./aptitude/routes/adminRoutes.js";
 import masterAdminRoutes from "./aptitude/routes/masterAdminRoutes.js";
 import studentRoutes from "./aptitude/routes/studentRoutes.js";
+import programmingStudentRoutes from "./programming/routes/studentRoutes.js";
+import programmingAdminRoutes from "./programming/routes/adminRoutes.js";
+import programmingMasterAdminRoutes from "./programming/routes/masterAdminRoutes.js";
+import assessmentStudentRoutes from "./programming/routes/assessmentStudentRoutes.js";
+import assessmentAdminRoutes from "./programming/routes/assessmentAdminRoutes.js";
+import assessmentMasterAdminRoutes from "./programming/routes/assessmentMasterAdminRoutes.js";
+import { getCodeRunnerHealth } from "./programming/services/executionService.js";
 import { aiService } from "./services/aiService.js";
 import { extractTextFromPdf } from "./services/resumeParser.js";
 import { transcriber } from "./services/transcriber.js";
@@ -29,7 +36,8 @@ import {
 } from "./services/mediaService.js";
 import { generateAtsPdf, generatePerformancePdf } from "./services/pdfReports.js";
 import { HttpError, asyncHandler } from "./utils/httpError.js";
-import { requireAuth, requireModuleAccess } from "./aptitude/middleware/auth.js";
+import { requireAuth, requireModuleAccess, requireRole } from "./aptitude/middleware/auth.js";
+import { formatDisplayName } from "./aptitude/utils/nameFormat.js";
 
 const app = express();
 const upload = multer({
@@ -158,14 +166,28 @@ app.get("/", (req, res) => {
   });
 });
 
-app.get("/api/health", (req, res) => {
+app.get("/api/health", asyncHandler(async (req, res) => {
+  const codeRunner = await getCodeRunnerHealth();
   res.json({
     status: "healthy",
     version: "1.0-node",
     mongodb: "connected",
-    stt: "groq-whisper-large-v3-turbo"
+    stt: "groq-whisper-large-v3-turbo",
+    code_runner: {
+      provider: codeRunner.provider,
+      configured: codeRunner.configured,
+      healthy: codeRunner.healthy,
+    },
   });
-});
+}));
+
+app.get("/api/health/runner", requireAuth, requireRole("admin", "master_admin"), asyncHandler(async (req, res) => {
+  res.json({
+    code_runner: await getCodeRunnerHealth({
+      deep: req.query.deep === "1" || req.query.deep === "true",
+    }),
+  });
+}));
 
 app.post("/api/signup", asyncHandler(async (req, res) => {
   const { email, password, name } = req.body || {};
@@ -175,7 +197,7 @@ app.post("/api/signup", asyncHandler(async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const displayName = typeof name === "string" ? name.trim() : "";
+  const displayName = formatDisplayName(name);
   const { salt, hash } = await hashPassword(password);
   const authToken = createAuthToken();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -376,7 +398,7 @@ async function downloadAndSave(url, suffix) {
   }
   const buffer = Buffer.from(await response.arrayBuffer());
   const safeSuffix = suffix || "";
-  const tempPath = `/tmp/prepup-${Date.now()}-${Math.random().toString(16).slice(2)}${safeSuffix}`;
+  const tempPath = `/tmp/edvolve-${Date.now()}-${Math.random().toString(16).slice(2)}${safeSuffix}`;
   await fs.writeFile(tempPath, buffer);
   return tempPath;
 }
@@ -722,6 +744,12 @@ app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/master", masterAdminRoutes);
 app.use("/api/student", studentRoutes);
+app.use("/api/programming/student", programmingStudentRoutes);
+app.use("/api/programming/admin", programmingAdminRoutes);
+app.use("/api/programming/master", programmingMasterAdminRoutes);
+app.use("/api/programming-assessment/student", assessmentStudentRoutes);
+app.use("/api/programming-assessment/admin", assessmentAdminRoutes);
+app.use("/api/programming-assessment/master", assessmentMasterAdminRoutes);
 
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError) {

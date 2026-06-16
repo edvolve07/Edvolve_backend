@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile);
 
 export async function writeTempFile(file, suffix = "") {
   const safeSuffix = suffix || "";
-  const tempPath = `/tmp/prepup-${Date.now()}-${Math.random().toString(16).slice(2)}${safeSuffix}`;
+  const tempPath = `/tmp/edvolve-${Date.now()}-${Math.random().toString(16).slice(2)}${safeSuffix}`;
   await fs.writeFile(tempPath, file.buffer);
   return tempPath;
 }

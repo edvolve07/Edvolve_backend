@@ -40,21 +40,65 @@ function createMessage({ to, subject, text, html }) {
     `To: ${escapeHeader(to)}`,
     `Subject: ${escapeHeader(subject)}`,
     'MIME-Version: 1.0',
-    'Content-Type: multipart/alternative; boundary="prepup-reset-boundary"',
+    'Content-Type: multipart/alternative; boundary="edvolve-reset-boundary"',
   ];
 
-  return `${headers.join('\r\n')}\r\n\r\n--prepup-reset-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n\r\n--prepup-reset-boundary\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${html}\r\n\r\n--prepup-reset-boundary--`;
+  return `${headers.join('\r\n')}\r\n\r\n--edvolve-reset-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n\r\n--edvolve-reset-boundary\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${html}\r\n\r\n--edvolve-reset-boundary--`;
+}
+
+async function deliverEmail({ to, subject, text, html }) {
+  if (!isEmailServiceConfigured()) {
+    throw new Error('SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.');
+  }
+
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 587);
+  const secure = boolEnv('SMTP_SECURE', port === 465);
+  const startTls = boolEnv('SMTP_STARTTLS', !secure);
+  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
+
+  const client = createSmtpClient({ host, port, secure });
+  try {
+    await client.waitFor(220);
+    await client.command(`EHLO ${process.env.SMTP_HELO_DOMAIN || 'localhost'}`, 250);
+    if (startTls) {
+      await client.command('STARTTLS', 220);
+      await client.startTls();
+      await client.command(`EHLO ${process.env.SMTP_HELO_DOMAIN || 'localhost'}`, 250);
+    }
+    await client.command('AUTH LOGIN', 334);
+    await client.command(Buffer.from(process.env.SMTP_USER).toString('base64'), 334);
+    await client.command(Buffer.from(process.env.SMTP_PASS).toString('base64'), 235);
+    await client.command(`MAIL FROM:<${escapeAddress(from)}>`, 250);
+    await client.command(`RCPT TO:<${escapeAddress(to)}>`, [250, 251]);
+    await client.command('DATA', 354);
+    await client.command(`${escapeData(createMessage({ to, subject, text, html }))}\r\n.`, 250);
+    await client.command('QUIT', 221).catch(() => null);
+  } catch (error) {
+    const details = [
+      error?.message,
+      error?.code ? `code=${error.code}` : '',
+      error?.errno ? `errno=${error.errno}` : '',
+      error?.syscall ? `syscall=${error.syscall}` : '',
+      error?.hostname ? `host=${error.hostname}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    throw new Error(details || 'Email delivery failed');
+  } finally {
+    client.close();
+  }
 }
 
 function createPasswordResetTemplate({ name, resetLink }) {
-  const safeName = escapeHtml(name || 'PrepUp user');
+  const safeName = escapeHtml(name || 'Edvolve user');
   const safeResetLink = escapeHtml(resetLink);
   const ttl = RESET_TOKEN_TTL_MINUTES;
 
   const text = [
-    `Hi ${name || 'PrepUp user'},`,
+    `Hi ${name || 'Edvolve user'},`,
     '',
-    'We received a request to reset the password for your PrepUp account.',
+    'We received a request to reset the password for your Edvolve account.',
     '',
     `Reset your password using this secure link. It expires in ${ttl} minutes:`,
     resetLink,
@@ -64,7 +108,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
     'For your security, do not forward this email or share the reset link with anyone.',
     '',
     'Regards,',
-    'The PrepUp Team',
+    'The Edvolve Team',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -72,7 +116,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Reset your PrepUp password</title>
+    <title>Reset your Edvolve password</title>
   </head>
   <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
@@ -81,7 +125,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
-                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">PrepUp</div>
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvolve</div>
                 <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
               </td>
             </tr>
@@ -90,7 +134,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
                 <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Hi ${safeName},</p>
                 <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Reset your password</h1>
                 <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
-                  We received a request to reset the password for your PrepUp account. Use the secure button below to create a new password.
+                  We received a request to reset the password for your Edvolve account. Use the secure button below to create a new password.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0;">
                   <tr>
@@ -120,7 +164,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
                 <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
                   For your security, do not forward this email or share the reset link with anyone.
                 </p>
-                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The PrepUp Team</p>
+                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvolve Team</p>
               </td>
             </tr>
           </table>
@@ -252,8 +296,8 @@ export async function sendPasswordResetEmail({ to, name, resetLink }) {
   const secure = boolEnv('SMTP_SECURE', port === 465);
   const startTls = boolEnv('SMTP_STARTTLS', !secure);
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-  const safeName = name || 'PrepUp user';
-  const subject = 'Reset your PrepUp password';
+  const safeName = name || 'Edvolve user';
+  const subject = 'Reset your Edvolve password';
   const { text, html } = createPasswordResetTemplate({ name: safeName, resetLink });
 
   const client = createSmtpClient({ host, port, secure });
@@ -297,7 +341,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
   const text = [
     `Dear ${name || 'User'},`,
     '',
-    `Your PrepUp account has been created.`,
+    `Your Edvolve account has been created.`,
     '',
     `Account details:`,
     `  Name:  ${name}`,
@@ -309,7 +353,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
     `Login URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}/login`,
     '',
     'Regards,',
-    'The PrepUp Team',
+    'The Edvolve Team',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -317,7 +361,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Welcome to PrepUp</title>
+    <title>Welcome to Edvolve</title>
   </head>
   <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
@@ -326,14 +370,14 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
-                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">PrepUp</div>
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvolve</div>
                 <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
               </td>
             </tr>
             <tr>
               <td style="padding:32px;">
                 <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Dear ${safeName},</p>
-                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Welcome to PrepUp</h1>
+                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Welcome to Edvolve</h1>
                 <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
                   Your account has been created. Please find your login details below.
                 </p>
@@ -364,7 +408,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
                   <tr>
                     <td style="border-radius:10px;background:#2563eb;">
                       <a href="${escapeHtml(process.env.CLIENT_URL || 'http://localhost:5173')}/login" style="display:inline-block;padding:14px 22px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
-                        Login to PrepUp
+                        Login to Edvolve
                       </a>
                     </td>
                   </tr>
@@ -376,7 +420,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
                 <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
                   For your security, please change your password immediately after first login.
                 </p>
-                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The PrepUp Team</p>
+                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvolve Team</p>
               </td>
             </tr>
           </table>
@@ -399,8 +443,8 @@ export async function sendAccountCreationEmail({ to, name, tempPassword }) {
   const secure = boolEnv('SMTP_SECURE', port === 465);
   const startTls = boolEnv('SMTP_STARTTLS', !secure);
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-  const safeName = name || 'PrepUp user';
-  const subject = 'Your PrepUp account has been created';
+  const safeName = name || 'Edvolve user';
+  const subject = 'Your Edvolve account has been created';
   const { text, html } = createAccountCreationTemplate({ name: safeName, email: to, tempPassword });
 
   const client = createSmtpClient({ host, port, secure });
@@ -434,6 +478,119 @@ export async function sendAccountCreationEmail({ to, name, tempPassword }) {
   } finally {
     client.close();
   }
+}
+
+function formatAssessmentDate(value) {
+  if (!value) return 'Open';
+  try {
+    return new Intl.DateTimeFormat('en', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(value));
+  } catch {
+    return 'Open';
+  }
+}
+
+function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
+  const safeName = escapeHtml(name || 'Edvolve student');
+  const safeAdminName = escapeHtml(adminName || 'your admin');
+  const safeTitle = escapeHtml(assessment.title || 'Aptitude Assessment');
+  const safeConcept = escapeHtml(assessment.concept || 'Aptitude');
+  const safeDifficulty = escapeHtml(assessment.difficulty || 'Mixed');
+  const safeDuration = escapeHtml(`${assessment.duration_minutes || 0} minutes`);
+  const safeStart = escapeHtml(formatAssessmentDate(assessment.start_time));
+  const safeEnd = escapeHtml(formatAssessmentDate(assessment.end_time));
+  const loginUrl = `${process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173'}/aptitude`;
+  const safeLoginUrl = escapeHtml(loginUrl);
+
+  const text = [
+    `Hi ${name || 'Edvolve student'},`,
+    '',
+    `${adminName || 'Your admin'} has published a new aptitude assessment for you on Edvolve.`,
+    '',
+    `Assessment: ${assessment.title || 'Aptitude Assessment'}`,
+    `Concept: ${assessment.concept || 'Aptitude'}`,
+    `Difficulty: ${assessment.difficulty || 'Mixed'}`,
+    `Duration: ${assessment.duration_minutes || 0} minutes`,
+    `Start: ${formatAssessmentDate(assessment.start_time)}`,
+    `End: ${formatAssessmentDate(assessment.end_time)}`,
+    '',
+    `Open Edvolve to view and start the assessment: ${loginUrl}`,
+    '',
+    'Regards,',
+    'The Edvolve Team',
+  ].join('\n');
+
+  const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>New Edvolve aptitude assessment</title>
+  </head>
+  <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+            <tr>
+              <td style="background:#064e3b;padding:28px 32px;color:#ffffff;">
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvolve</div>
+                <div style="margin-top:6px;font-size:13px;color:#d1fae5;">New aptitude assessment published</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px;">
+                <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Hi ${safeName},</p>
+                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">${safeTitle}</h1>
+                <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
+                  ${safeAdminName} has published a new aptitude assessment for you. Open Edvolve to review the schedule and begin when it is available.
+                </p>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:22px 0;width:100%;">
+                  <tr>
+                    <td style="padding:18px 20px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;">
+                      <table role="presentation" cellspacing="0" cellpadding="0" width="100%">
+                        <tr><td style="padding:4px 0;font-size:14px;color:#64748b;width:120px;">Concept:</td><td style="padding:4px 0;font-size:14px;font-weight:700;color:#0f172a;">${safeConcept}</td></tr>
+                        <tr><td style="padding:4px 0;font-size:14px;color:#64748b;">Difficulty:</td><td style="padding:4px 0;font-size:14px;font-weight:700;color:#0f172a;">${safeDifficulty}</td></tr>
+                        <tr><td style="padding:4px 0;font-size:14px;color:#64748b;">Duration:</td><td style="padding:4px 0;font-size:14px;font-weight:700;color:#0f172a;">${safeDuration}</td></tr>
+                        <tr><td style="padding:4px 0;font-size:14px;color:#64748b;">Start:</td><td style="padding:4px 0;font-size:14px;font-weight:700;color:#0f172a;">${safeStart}</td></tr>
+                        <tr><td style="padding:4px 0;font-size:14px;color:#64748b;">End:</td><td style="padding:4px 0;font-size:14px;font-weight:700;color:#0f172a;">${safeEnd}</td></tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0;">
+                  <tr>
+                    <td style="border-radius:10px;background:#047857;">
+                      <a href="${safeLoginUrl}" style="display:inline-block;padding:14px 22px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
+                        Open assessment
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;">
+                <p style="margin:0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvolve Team</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  return { text, html };
+}
+
+export async function sendAssessmentPublishedEmail({ to, name, assessment, adminName }) {
+  const safeName = name || 'Edvolve student';
+  const subject = `New aptitude assessment: ${assessment.title || 'Edvolve Assessment'}`;
+  const { text, html } = createAssessmentPublishedTemplate({ name: safeName, assessment, adminName });
+  await deliverEmail({ to, subject, text, html });
 }
 
 export { RESET_TOKEN_TTL_MINUTES };

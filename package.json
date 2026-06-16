@@ -1,12 +1,15 @@
 {
-  "name": "prepup-backend-node",
+  "name": "edvolve-backend-node",
   "version": "1.0.0",
-  "description": "Node.js backend for the PrepUp AI interview system.",
+  "description": "Node.js backend for the Edvolve AI interview system.",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "curate:programming": "node src/programming/seed/curateProblems.js",
+    "normalize:programming-leetcode": "node src/programming/seed/normalizeLeetcodeStyleProblems.js",
+    "cleanup:programming-headings": "node src/programming/seed/removeHeadingProblems.js"
   },
   "engines": {
     "node": ">=20"

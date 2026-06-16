@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { recordAiUsage } from '../../services/aiUsageService.js';
 import { CONCEPTS } from '../utils/constants.js';
 import { badRequest } from '../utils/httpError.js';
+import { Question } from '../models/Question.js';
 
 function extractJson(text) {
   const trimmed = text.trim();
@@ -23,10 +24,14 @@ function extractJson(text) {
   return JSON.parse(trimmed.slice(start, end + 1));
 }
 
-export function buildPrompt(config, fileContext = '') {
+export function buildPrompt(config, fileContext = '', existingQuestionTexts = []) {
   const maxContextChars = Number(process.env.AI_FILE_CONTEXT_CHARS || 5000);
   const contextBlock = fileContext
     ? `\nUse this uploaded study material as optional context. Do not copy it verbatim unless needed for a question:\n${fileContext.slice(0, maxContextChars)}\n`
+    : '';
+
+  const existingBlock = existingQuestionTexts.length > 0
+    ? `\nThe following questions already exist in the database and must NOT be reused or rephrased:\n${existingQuestionTexts.map((q, i) => `${i + 1}. ${q}`).join('\n')}\nGenerate completely different questions with different scenarios, numerical values, and wording.\n`
     : '';
 
   return `Generate aptitude assessment questions for placement preparation and interview preparation.
@@ -37,17 +42,23 @@ Number of questions: ${config.question_count}
 Marks per question: ${config.marks}
 Negative marks: ${config.negative_marks}
 ${contextBlock}
+${existingBlock}
 Requirements:
 
 * Generate only MCQ questions
 * Each question must contain exactly 4 options:
   A, B, C, D
 * Only one correct answer
-* Include detailed step-by-step explanation
-* Include shortcut solving method where applicable
+* Every question MUST have a unique question_text — do NOT repeat, rephrase, or generate the same scenario as any other question in this output or the existing list above
+* Use different numerical values, different contexts, and different scenarios for every question
+* Include a detailed, step-by-step explanation (3-6 sentences minimum) that shows:
+  - The formula or concept used
+  - Each step of the calculation with intermediate values
+  - Why each step is performed
+  - The final answer and how it was derived
+* Include a shortcut solving method where applicable (1-2 sentences, alternative quick approach)
 * Include concept name
 * Include difficulty level
-* Avoid repeated questions
 * Avoid ambiguity
 * Questions should match placement aptitude standards
 * Return ONLY valid JSON
@@ -184,7 +195,11 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const percent = randomInt(5, 35, seed + 1);
       correctValue = Math.round((base * percent) / 100);
       question_text = `If ${percent}% of ${base} students passed the aptitude test, how many students passed?`;
-      explanation = `Calculate ${percent}% of ${base}: multiply ${base} by ${percent} and divide by 100 to get ${correctValue}.`;
+      explanation = `Step 1: Identify the total number of students = ${base}. ` +
+        `Step 2: The percentage that passed = ${percent}%. ` +
+        `Step 3: Convert the percentage to a decimal: ${percent}% = ${percent}/100 = ${(percent / 100).toFixed(2)}. ` +
+        `Step 4: Multiply the total by the decimal: ${base} × ${(percent / 100).toFixed(2)} = ${correctValue}. ` +
+        `Therefore, ${correctValue} students passed the aptitude test.`;
       shortcut = `Use quick percentage: ${base} × ${percent}/100 = ${correctValue}.`;
       break;
     }
@@ -193,8 +208,12 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const profit = randomInt(10, 45, seed + 1);
       correctValue = Math.round((cost * profit) / 100);
       question_text = `A product is bought for ₹${cost} and sold at a profit of ${profit}%. What is the profit amount?`;
-      explanation = `Profit = ${profit}% of ₹${cost} = ₹${correctValue}.`;
-      shortcut = `Multiply cost by profit percent and divide by 100.`;
+      explanation = `Step 1: Cost Price (CP) = ₹${cost}. ` +
+        `Step 2: Profit percentage = ${profit}%. ` +
+        `Step 3: Profit amount = (Profit% / 100) × CP = (${profit}/100) × ${cost} = ${(profit / 100).toFixed(2)} × ${cost}. ` +
+        `Step 4: Calculate: ${(profit / 100).toFixed(2)} × ${cost} = ₹${correctValue}. ` +
+        `The profit earned on selling the product is ₹${correctValue}.`;
+      shortcut = `Multiply cost by profit percent and divide by 100: (${profit} × ${cost}) / 100 = ${correctValue}.`;
       break;
     }
     case 'Ratio and Proportion': {
@@ -203,8 +222,12 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const multiple = randomInt(5, 15, seed + 2);
       correctValue = a * multiple;
       question_text = `If the ratio of A to B is ${a}:${b} and B is ${b * multiple}, what is the value of A?`;
-      explanation = `For ratio ${a}:${b}, if B is ${b * multiple}, then A = ${a} × ${multiple} = ${correctValue}.`;
-      shortcut = `Scale the ratio by the same multiplier for both terms.`;
+      explanation = `Step 1: The ratio A:B = ${a}:${b} means A/B = ${a}/${b}. ` +
+        `Step 2: Given B = ${b * multiple}, find the scaling factor. ` +
+        `Step 3: Scaling factor = B / ${b} = ${b * multiple} / ${b} = ${multiple}. ` +
+        `Step 4: Apply the same scaling factor to A: A = ${a} × ${multiple} = ${correctValue}. ` +
+        `Therefore, the value of A is ${correctValue}.`;
+      shortcut = `Scale the ratio by the same multiplier: A = ${a} × (${b * multiple}/${b}) = ${correctValue}.`;
       break;
     }
     case 'Time and Work': {
@@ -212,8 +235,12 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const rateB = randomInt(6, 14, seed + 1);
       correctValue = Math.round((rateA * rateB) / (rateA + rateB));
       question_text = `A can finish a job in ${rateA} days and B in ${rateB} days. In how many days will they finish together?`;
-      explanation = `Combined rate = 1/${rateA} + 1/${rateB}. Total days = 1 / combined rate = ${correctValue}.`;
-      shortcut = `Use harmonic sum: AB/(A+B).`;
+      explanation = `Step 1: A's rate = 1/${rateA} of the job per day (they complete 1/${rateA}th of the work daily). ` +
+        `Step 2: B's rate = 1/${rateB} of the job per day. ` +
+        `Step 3: Combined rate = 1/${rateA} + 1/${rateB} = (${rateB} + ${rateA}) / (${rateA} × ${rateB}) = ${rateA + rateB}/${rateA * rateB}. ` +
+        `Step 4: Total days = 1 / Combined rate = ${rateA * rateB} / ${rateA + rateB} = ${correctValue} days. ` +
+        `Working together, A and B finish the job in ${correctValue} days.`;
+      shortcut = `Use harmonic sum formula: AB/(A+B) = (${rateA} × ${rateB})/(${rateA} + ${rateB}) = ${correctValue}.`;
       break;
     }
     case 'Time, Speed and Distance': {
@@ -221,25 +248,36 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const time = randomInt(2, 5, seed + 1);
       correctValue = speed * time;
       question_text = `A vehicle travels at ${speed} km/h for ${time} hours. How many kilometers does it cover?`;
-      explanation = `Distance = speed × time = ${speed} × ${time} = ${correctValue} km.`;
-      shortcut = `Multiply the rate by time.`;
+      explanation = `Step 1: Identify the given values: Speed = ${speed} km/h, Time = ${time} hours. ` +
+        `Step 2: Recall the formula: Distance = Speed × Time. ` +
+        `Step 3: Substitute the values: Distance = ${speed} × ${time} = ${correctValue} km. ` +
+        `The vehicle covers ${correctValue} kilometers in ${time} hours.`;
+      shortcut = `Multiply speed by time directly: ${speed} × ${time} = ${correctValue} km.`;
       break;
     }
     case 'Number System': {
       const value = randomInt(15, 90, seed);
-      correctValue = value + randomInt(8, 22, seed + 1);
-      question_text = `What is ${value} plus ${correctValue - value}?`;
-      explanation = `Add the two numbers: ${value} + ${correctValue - value} = ${correctValue}.`;
-      shortcut = `Combine the numbers directly.`;
+      const addend = randomInt(8, 22, seed + 1);
+      correctValue = value + addend;
+      question_text = `What is ${value} plus ${addend}?`;
+      explanation = `Step 1: Start with the first number = ${value}. ` +
+        `Step 2: Add the second number = ${addend}. ` +
+        `Step 3: Perform the addition: ${value} + ${addend} = ${correctValue}. ` +
+        `The sum of ${value} and ${addend} is ${correctValue}.`;
+      shortcut = `Add the units and tens columns separately, carrying over when needed.`;
       break;
     }
     case 'Simplification': {
       const a = randomInt(20, 40, seed);
       const b = randomInt(1, 9, seed + 1);
-      correctValue = a / b;
+      correctValue = Math.round(a / b);
       question_text = `Simplify ${a} ÷ ${b}.`;
-      explanation = `Divide ${a} by ${b} to get ${correctValue}.`;
-      shortcut = `Use integer division when divisible.`;
+      explanation = `Step 1: Divide the numerator ${a} by the denominator ${b}. ` +
+        `Step 2: ${b} goes into ${a} a total of ${correctValue} times (${b} × ${correctValue} = ${b * correctValue}). ` +
+        `Step 3: The remainder is ${a} - ${b * correctValue} = ${a - b * correctValue}. ` +
+        `Step 4: Result = ${correctValue} with remainder ${a - b * correctValue}, which equals ${a}/${b}. ` +
+        `The simplified result is ${correctValue}.`;
+      shortcut = `Perform integer division: ${a} ÷ ${b} = ${correctValue}.`;
       break;
     }
     case 'Averages': {
@@ -249,8 +287,12 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const average = Math.round(sum / n);
       correctValue = average * n;
       question_text = `The average of ${n} numbers is ${average}. What is the sum of the numbers?`;
-      explanation = `Sum = average × count = ${average} × ${n} = ${correctValue}.`;
-      shortcut = `Multiply average by the quantity.`;
+      explanation = `Step 1: Recall the formula: Average = Sum of numbers / Count of numbers. ` +
+        `Step 2: Rearranging: Sum of numbers = Average × Count. ` +
+        `Step 3: Given average = ${average} and count = ${n}. ` +
+        `Step 4: Sum = ${average} × ${n} = ${correctValue}. ` +
+        `The sum of the ${n} numbers is ${correctValue}.`;
+      shortcut = `Multiply average by the quantity: ${average} × ${n} = ${correctValue}.`;
       break;
     }
     default: {
@@ -258,8 +300,11 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       const b = randomInt(3, 12, seed + 1);
       correctValue = a * b;
       question_text = `If one student solves ${a} questions each hour, how many questions will they solve in ${b} hours?`;
-      explanation = `Multiply rate by time: ${a} × ${b} = ${correctValue}.`;
-      shortcut = `Use repeated addition or multiplication.`;
+      explanation = `Step 1: Rate = ${a} questions per hour. ` +
+        `Step 2: Time = ${b} hours. ` +
+        `Step 3: Total questions = Rate × Time = ${a} × ${b} = ${correctValue}. ` +
+        `The student solves ${correctValue} questions in ${b} hours.`;
+      shortcut = `Multiply the rate by the hours: ${a} × ${b} = ${correctValue}.`;
       break;
     }
   }
@@ -404,12 +449,11 @@ function buildGenerationJobs(config, batchSize) {
   return jobs;
 }
 
-async function generateBatchJson(openai, ai, config, fileContext, batchLabel) {
-  const prompt = `${buildPrompt(config, fileContext)}
+async function generateBatchJson(openai, ai, config, fileContext, batchLabel, existingQuestionTexts = []) {
+  const prompt = `${buildPrompt(config, fileContext, existingQuestionTexts)}
 
 Batch instruction:
-Generate batch ${batchLabel}. Make every question unique within this batch.
-Return exactly ${config.question_count} questions.`;
+Generate batch ${batchLabel}. Every question must be different from every other batch and from the existing list above. Use unique numerical values, wording, and scenarios — never reuse a question_text. Return exactly ${config.question_count} questions.`;
 
   const request = {
     model: ai.model,
@@ -484,11 +528,11 @@ Return exactly ${config.question_count} questions.`;
   throw badRequest(`AI batch ${batchLabel} failed`, [lastMessage]);
 }
 
-async function generateJobWithRecovery(openai, ai, job, fileContext, jobIndex) {
+async function generateJobWithRecovery(openai, ai, job, fileContext, jobIndex, existingQuestionTexts = []) {
   const batchLabel = String(jobIndex + 1);
 
   try {
-    return await generateBatchJson(openai, ai, job, fileContext, batchLabel);
+    return await generateBatchJson(openai, ai, job, fileContext, batchLabel, existingQuestionTexts);
   } catch (error) {
     if (job.question_count <= 1) {
       throw error;
@@ -511,7 +555,7 @@ async function generateJobWithRecovery(openai, ai, job, fileContext, jobIndex) {
       const label = `${batchLabel}.${index + 1}`;
       try {
         individualBatches.push(
-          await generateBatchJson(openai, ai, individualJobs[index], fileContext, label),
+          await generateBatchJson(openai, ai, individualJobs[index], fileContext, label, existingQuestionTexts),
         );
       } catch (individualError) {
         throw badRequest(`AI batch ${batchLabel} failed after recovery`, [
@@ -550,10 +594,22 @@ export async function generateAssessmentJson(config, fileContext = '') {
     );
   }
 
+  // Fetch existing question texts for the same concept to avoid duplicates
+  let existingQuestionTexts = [];
+  try {
+    const existingQuestions = await Question.find(
+      { concept: config.concept === 'All Concepts' ? { $exists: true } : config.concept },
+      { question_text: 1, _id: 0 },
+    ).lean();
+    existingQuestionTexts = existingQuestions.map((q) => q.question_text);
+  } catch {
+    // Non-critical — proceed without existing context
+  }
+
   const openai = createClient(ai);
   const jobs = buildGenerationJobs(config, ai.batchSize);
   const batches = await runWithConcurrency(jobs, ai.concurrency, (job, index) =>
-    generateJobWithRecovery(openai, ai, job, fileContext, index),
+    generateJobWithRecovery(openai, ai, job, fileContext, index, existingQuestionTexts),
   );
   const questions = batches.flatMap((batch) => batch.questions || []);
 

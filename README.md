@@ -8,9 +8,9 @@
   <img src="https://img.shields.io/badge/OpenAI-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI"/>
 </p>
 
-<h1 align="center">PrepUp Backend</h1>
+<h1 align="center">Edvolve Backend</h1>
 <p align="center">
-  <strong>Node.js + Express backend powering the PrepUp AI-driven placement readiness platform</strong>
+  <strong>Node.js + Express backend powering the Edvolve AI-driven placement readiness platform</strong>
   <br/>
   Mock interviews · Aptitude assessments · AI evaluations · Reports & analytics
 </p>
@@ -264,7 +264,7 @@ Server starts at **http://localhost:8000**.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `MONGO_URI` | Yes | `mongodb://127.0.0.1:27017/prepup` | Native driver connection |
+| `MONGO_URI` | Yes | `mongodb://127.0.0.1:27017/edvolve` | Native driver connection |
 | `MONGODB_URI` | Yes | same as above | Mongoose connection |
 | `PORT` | No | `8000` | Server port |
 | `JWT_SECRET` | Yes | — | JWT signing secret |

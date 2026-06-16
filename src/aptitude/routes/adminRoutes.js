@@ -1,10 +1,14 @@
 import express from 'express';
 import multer from 'multer';
+import PDFDocument from 'pdfkit';
+import XLSX from 'xlsx';
 import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
 import { Assessment } from '../models/Assessment.js';
 import { AssessmentAttempt } from '../models/AssessmentAttempt.js';
+import { ProctoringEvent } from '../models/ProctoringEvent.js';
 import { Question } from '../models/Question.js';
 import { StudentAnswer } from '../models/StudentAnswer.js';
+import { StudentCertificate } from '../models/StudentCertificate.js';
 import { User } from '../models/User.js';
 import { collections } from '../../db.js';
 import { extractFileText } from '../services/fileTextService.js';
@@ -14,6 +18,10 @@ import { CONCEPTS, DIFFICULTIES, STATUSES } from '../utils/constants.js';
 import { badRequest, notFound } from '../utils/httpError.js';
 import { toReviewQuestion, validateQuestions } from '../utils/questionValidation.js';
 import { ROLES } from '../utils/roles.js';
+import {
+  isEmailServiceConfigured,
+  sendAssessmentPublishedEmail,
+} from '../../services/emailService.js';
 
 const router = express.Router();
 const upload = multer({
@@ -107,6 +115,40 @@ function serializeAttemptAnalytics(attempt) {
   };
 }
 
+function sendExcel(res, filename, rows) {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(workbook, sheet, 'Report');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename=${filename}.xlsx`);
+  res.send(buffer);
+}
+
+function sendReportPdf(res, filename, title, rows) {
+  const doc = new PDFDocument({ margin: 42 });
+  const chunks = [];
+  doc.on('data', (chunk) => chunks.push(chunk));
+  doc.on('end', () => {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}.pdf`);
+    res.send(Buffer.concat(chunks));
+  });
+  doc.font('Helvetica-Bold').fontSize(18).text(title);
+  doc.font('Helvetica').fontSize(9).text(`Generated: ${new Date().toISOString()}`);
+  doc.moveDown();
+  for (const row of rows.slice(0, 120)) {
+    doc.font('Helvetica-Bold').fontSize(10).text(row.name || row.student_name || row.title || row.report || 'Record');
+    doc.font('Helvetica').fontSize(8).text(
+      Object.entries(row)
+        .map(([key, value]) => `${key}: ${value ?? ''}`)
+        .join(' | '),
+    );
+    doc.moveDown(0.6);
+  }
+  doc.end();
+}
+
 async function serializeAssessment(assessment) {
   const totalQuestions = await Question.countDocuments({ assessment_id: assessment._id });
   return {
@@ -127,6 +169,54 @@ async function serializeAssessment(assessment) {
     created_at: assessment.created_at,
     updated_at: assessment.updated_at,
   };
+}
+
+async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
+  if (!isEmailServiceConfigured()) {
+    return {
+      configured: false,
+      total_recipients: 0,
+      sent: 0,
+      failed: 0,
+      message: 'SMTP is not configured.',
+    };
+  }
+
+  const students = await User.find({
+    role: ROLES.STUDENT,
+    assigned_admin: admin._id,
+    is_active: { $ne: false },
+  }).select('name email');
+
+  const recipients = students.filter((student) => student.email);
+  const summary = {
+    configured: true,
+    total_recipients: recipients.length,
+    sent: 0,
+    failed: 0,
+  };
+
+  for (const student of recipients) {
+    try {
+      await sendAssessmentPublishedEmail({
+        to: student.email,
+        name: student.name,
+        assessment,
+        adminName: admin.name,
+      });
+      summary.sent += 1;
+    } catch (error) {
+      summary.failed += 1;
+      console.error('[assessment-publish-email] Email failed:', {
+        assessment_id: assessment._id?.toString(),
+        student_id: student._id?.toString(),
+        email: student.email,
+        error: error.message,
+      });
+    }
+  }
+
+  return summary;
 }
 
 router.get(
@@ -225,6 +315,252 @@ router.get(
         })),
       },
     });
+  }),
+);
+
+router.get(
+  '/exports/:type',
+  asyncHandler(async (req, res) => {
+    const type = String(req.params.type || '');
+    const format = String(req.query.format || 'xlsx').toLowerCase();
+    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id name email is_active updated_at');
+    const assignedStudentIds = assignedStudents.map((student) => student._id);
+    const assignedStudentIdStrings = assignedStudents.map((student) => student._id.toString());
+    let rows = [];
+    let title = 'Edvolve Report';
+
+    if (type === 'student-performance') {
+      title = 'Student Performance Report';
+      const attempts = await AssessmentAttempt.find({ student_id: { $in: assignedStudentIds }, status: 'submitted' })
+        .populate('student_id', 'name email')
+        .populate('assessment_id', 'title concept difficulty passing_marks total_marks')
+        .sort({ submitted_at: -1 });
+      const grouped = new Map();
+      for (const attempt of attempts.map(serializeAttemptAnalytics)) {
+        const current = grouped.get(attempt.student_id) || {
+          student_name: attempt.student_name,
+          email: attempt.email,
+          attempts: 0,
+          passed: 0,
+          average_percentage: 0,
+        };
+        current.attempts += 1;
+        current.passed += attempt.passed ? 1 : 0;
+        current.average_percentage += Number(attempt.percentage || 0);
+        grouped.set(attempt.student_id, current);
+      }
+      rows = Array.from(grouped.values()).map((row) => ({
+        ...row,
+        average_percentage: row.attempts ? Math.round(row.average_percentage / row.attempts) : 0,
+      }));
+    } else if (type === 'assessment-results') {
+      title = 'Assessment Result Report';
+      const attempts = await AssessmentAttempt.find({ student_id: { $in: assignedStudentIds }, status: 'submitted' })
+        .populate('student_id', 'name email')
+        .populate('assessment_id', 'title concept difficulty passing_marks total_marks duration_minutes')
+        .sort({ submitted_at: -1 });
+      rows = attempts.map(serializeAttemptAnalytics).map((attempt) => ({
+        student_name: attempt.student_name,
+        email: attempt.email,
+        assessment: attempt.assessment_title,
+        concept: attempt.concept,
+        difficulty: attempt.difficulty,
+        score: attempt.score,
+        total_marks: attempt.total_marks,
+        percentage: attempt.percentage,
+        result: attempt.passed ? 'Passed' : 'Failed',
+        submitted_at: attempt.submitted_at,
+      }));
+    } else if (type === 'interview-readiness') {
+      title = 'Interview Readiness Report';
+      const interviewReports = await collections().reports.find(
+        assignedStudentIdStrings.length ? { student_id: { $in: assignedStudentIdStrings } } : { student_id: null },
+        { projection: { student_name: 1, student_email: 1, interview_role: 1, interview_domain: 1, overall: 1, ats_analysis: 1, created_at: 1 } },
+      ).sort({ created_at: -1 }).limit(1000).toArray();
+      rows = interviewReports.map((report) => ({
+        student_name: report.student_name || '',
+        email: report.student_email || '',
+        role: report.interview_role || '',
+        domain: report.interview_domain || '',
+        interview_percentage: report.overall?.percentage || 0,
+        grade: report.overall?.grade_label || report.overall?.grade || '',
+        ats_score: report.ats_analysis?.ats_score || 0,
+        created_at: report.created_at,
+      }));
+    } else if (type === 'inactive-students') {
+      title = 'Inactive Students Report';
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      rows = assignedStudents
+        .filter((student) => student.is_active === false || !student.updated_at || new Date(student.updated_at) < thirtyDaysAgo)
+        .map((student) => ({
+          name: student.name,
+          email: student.email,
+          status: student.is_active === false ? 'Access revoked' : 'No recent updates',
+          last_updated: student.updated_at,
+        }));
+    } else {
+      throw badRequest('Unsupported export type');
+    }
+
+    if (format === 'pdf') {
+      sendReportPdf(res, type, title, rows);
+      return;
+    }
+    sendExcel(res, type, rows);
+  }),
+);
+
+router.get(
+  '/question-bank',
+  requireModuleAccess('aptitude'),
+  asyncHandler(async (req, res) => {
+    const { tag, difficulty, review_status, page = 1, limit = 50 } = req.query;
+    const filter = {};
+    if (tag) filter.tags = tag;
+    if (difficulty) filter.difficulty = difficulty;
+    if (review_status) filter.review_status = review_status;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const [questions, total] = await Promise.all([
+      Question.find(filter)
+        .populate('assessment_id', 'title')
+        .sort({ created_at: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum),
+      Question.countDocuments(filter),
+    ]);
+    res.json({
+      questions: questions.map((question) => ({
+        id: question._id.toString(),
+        assessment_title: question.assessment_id?.title || '',
+        question_text: question.question_text,
+        concept: question.concept,
+        difficulty: question.difficulty,
+        tags: question.tags || [],
+        review_status: question.review_status || 'approved',
+        is_private_bank: Boolean(question.is_private_bank),
+        created_at: question.created_at,
+      })),
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        total_pages: Math.ceil(total / limitNum),
+      },
+    });
+  }),
+);
+
+router.get(
+  '/question-bank/duplicates',
+  requireModuleAccess('aptitude'),
+  asyncHandler(async (_req, res) => {
+    const duplicates = await Question.aggregate([
+      {
+        $addFields: {
+          normalized: {
+            $trim: {
+              input: {
+                $regexReplace: {
+                  input: { $toLower: '$question_text' },
+                  regex: '[^a-z0-9]+',
+                  replacement: ' ',
+                },
+              },
+            },
+          },
+        },
+      },
+      { $group: { _id: '$normalized', count: { $sum: 1 }, ids: { $push: '$_id' }, samples: { $push: '$question_text' } } },
+      { $match: { count: { $gt: 1 }, _id: { $ne: '' } } },
+      { $sort: { count: -1 } },
+      { $limit: 50 },
+    ]);
+    res.json({
+      duplicates: duplicates.map((item) => ({
+        fingerprint: item._id,
+        count: item.count,
+        question_ids: item.ids.map((id) => id.toString()),
+        sample: item.samples[0],
+      })),
+    });
+  }),
+);
+
+router.patch(
+  '/question-bank/:id/review',
+  requireModuleAccess('aptitude'),
+  asyncHandler(async (req, res) => {
+    const reviewStatus = String(req.body.review_status || '');
+    if (!['draft', 'in_review', 'approved', 'rejected'].includes(reviewStatus)) {
+      throw badRequest('Invalid review status');
+    }
+    const question = await Question.findByIdAndUpdate(
+      req.params.id,
+      {
+        review_status: reviewStatus,
+        tags: Array.isArray(req.body.tags) ? req.body.tags.map((tag) => String(tag).trim()).filter(Boolean) : undefined,
+        is_private_bank: Boolean(req.body.is_private_bank),
+        institution_id: req.body.is_private_bank ? req.user._id : null,
+      },
+      { new: true },
+    );
+    if (!question) throw notFound('Question not found');
+    res.json({ question: { id: question._id.toString(), review_status: question.review_status, tags: question.tags || [] } });
+  }),
+);
+
+router.get(
+  '/proctoring/events',
+  asyncHandler(async (req, res) => {
+    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const studentIds = assignedStudents.map((student) => student._id);
+    const events = await ProctoringEvent.find(studentIds.length ? { student_id: { $in: studentIds } } : { student_id: null })
+      .populate('student_id', 'name email')
+      .sort({ occurred_at: -1 })
+      .limit(200);
+    res.json({
+      events: events.map((event) => ({
+        id: event._id.toString(),
+        student_name: event.student_id?.name || 'Unknown',
+        student_email: event.student_id?.email || '',
+        assessment_type: event.assessment_type,
+        event_type: event.event_type,
+        severity: event.severity,
+        metadata: event.metadata || {},
+        occurred_at: event.occurred_at,
+      })),
+    });
+  }),
+);
+
+router.post(
+  '/students/:studentId/certificates/:milestone',
+  asyncHandler(async (req, res) => {
+    const student = await User.findOne({ _id: req.params.studentId, role: ROLES.STUDENT, assigned_admin: req.user._id });
+    if (!student) throw notFound('Student not found');
+    const milestone = String(req.params.milestone || '');
+    const titles = {
+      coding_50: '50 Coding Problems Solved',
+      aptitude_passed: 'Aptitude Assessment Passed',
+      interview_readiness_75: 'Interview Readiness Certificate',
+      placement_track_complete: 'Full Placement Preparation Track',
+    };
+    if (!titles[milestone]) throw badRequest('Invalid certificate milestone');
+    const certificate = await StudentCertificate.findOneAndUpdate(
+      { student_id: student._id, milestone },
+      {
+        student_id: student._id,
+        milestone,
+        title: titles[milestone],
+        description: `${student.name} was certified by ${req.user.name || 'the institution'} for ${titles[milestone]}.`,
+        score: parseNumber(req.body.score, 0),
+        issued_by: req.user._id,
+        issued_at: new Date(),
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    res.status(201).json({ certificate });
   }),
 );
 
@@ -386,9 +722,14 @@ router.post(
       })),
     );
 
+    const emailNotification = assessment.status === 'published'
+      ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
+      : null;
+
     res.status(201).json({
       assessment: await serializeAssessment(assessment),
       questions: validation.questions,
+      email_notification: emailNotification,
     });
   }),
 );
@@ -419,7 +760,14 @@ router.post(
       status: config.status,
       created_by: req.user._id,
     });
-    res.status(201).json({ assessment: await serializeAssessment(assessment) });
+    const emailNotification = assessment.status === 'published'
+      ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
+      : null;
+
+    res.status(201).json({
+      assessment: await serializeAssessment(assessment),
+      email_notification: emailNotification,
+    });
   }),
 );
 
@@ -443,6 +791,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
+    const previousStatus = assessment.status;
 
     const allowed = [
       'title',
@@ -457,13 +806,24 @@ router.patch(
     ];
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
-        assessment[key] = ['start_time', 'end_time'].includes(key)
-          ? toUtcDate(req.body[key])
-          : req.body[key];
+        if (['start_time', 'end_time'].includes(key)) {
+          assessment[key] = toUtcDate(req.body[key]);
+        } else if (key === 'status') {
+          assessment[key] = String(req.body[key]).toLowerCase();
+        } else {
+          assessment[key] = req.body[key];
+        }
       }
     }
     await assessment.save();
-    res.json({ assessment: await serializeAssessment(assessment) });
+    const emailNotification = previousStatus !== 'published' && assessment.status === 'published'
+      ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
+      : null;
+
+    res.json({
+      assessment: await serializeAssessment(assessment),
+      email_notification: emailNotification,
+    });
   }),
 );
 
@@ -488,11 +848,19 @@ router.patch(
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findById(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
+    const previousStatus = assessment.status;
     const status = String(req.body.status || '').toLowerCase();
     if (!STATUSES.includes(status)) throw badRequest('Invalid status');
     assessment.status = status;
     await assessment.save();
-    res.json({ assessment: await serializeAssessment(assessment) });
+    const emailNotification = previousStatus !== 'published' && assessment.status === 'published'
+      ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
+      : null;
+
+    res.json({
+      assessment: await serializeAssessment(assessment),
+      email_notification: emailNotification,
+    });
   }),
 );
 

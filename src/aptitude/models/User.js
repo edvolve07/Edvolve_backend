@@ -1,6 +1,7 @@
 import mongoose from '../config/mongoose.js';
+import { formatDisplayName } from '../utils/nameFormat.js';
 
-const MODULE_OPTIONS = ['ai_interview', 'aptitude', 'both'];
+const MODULE_OPTIONS = ['ai_interview', 'aptitude', 'programming', 'both'];
 
 const userSchema = new mongoose.Schema(
   {
@@ -9,6 +10,7 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
       minlength: 2,
+      set: formatDisplayName,
     },
     email: {
       type: String,
@@ -27,6 +29,30 @@ const userSchema = new mongoose.Schema(
     organization: {
       type: String,
       trim: true,
+      default: '',
+    },
+    interested_role: {
+      type: String,
+      trim: true,
+      maxlength: 80,
+      default: '',
+    },
+    profile_headline: {
+      type: String,
+      trim: true,
+      maxlength: 120,
+      default: '',
+    },
+    profile_bio: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+      default: '',
+    },
+    location: {
+      type: String,
+      trim: true,
+      maxlength: 80,
       default: '',
     },
     modules_access: {
@@ -86,7 +112,12 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
     email: this.email,
     phone: this.phone || '',
     organization: this.organization || '',
-    modules_access: this.modules_access || ['both'],
+    interested_role: this.interested_role || '',
+    profile_headline: this.profile_headline || '',
+    profile_bio: this.profile_bio || '',
+    location: this.location || '',
+    modules_access: this.    modules_access || ['both'],
+    
     assigned_admin: this.assigned_admin ? this.assigned_admin.toString() : null,
     must_change_password: this.must_change_password !== false,
     role: this.role,
