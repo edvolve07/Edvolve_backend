@@ -99,6 +99,23 @@ sequenceDiagram
 
 ---
 
+## Anti-Cheating
+
+### Duplicate Attempt Prevention
+
+`POST /api/student/assessments/:id/start` returns **403 Forbidden** if the student already has an attempt with `status: "submitted"`. This is enforced in:
+
+- `src/aptitude/routes/studentRoutes.js:1150-1158` (aptitude assessments)
+- `src/programming/routes/assessmentStudentRoutes.js:85-87` (programming assessments)
+
+No retakes are permitted once an assessment is submitted. The frontend catches the 403 and displays a modal on the listing page.
+
+### Tab-Switch Auto-Submit
+
+The frontend listens for the `visibilitychange` event and submits the attempt immediately on the first tab switch. The backend processes the submission normally — the check is purely client-side to prevent navigation away from the assessment.
+
+---
+
 ## AI Pipeline
 
 ```mermaid
@@ -312,7 +329,7 @@ Server starts at **http://localhost:8000**.
 |---|---|---|
 | `GET` | `/api/student/dashboard` | Stats + analytics |
 | `GET` | `/api/student/assessments` | Published assessments |
-| `POST` | `/api/student/assessments/:id/start` | Start/resume attempt |
+| `POST` | `/api/student/assessments/:id/start` | Start/resume attempt (returns **403** if already submitted — no retakes allowed) |
 | `PUT` | `/api/student/attempts/:id/answers` | Save answer |
 | `POST` | `/api/student/attempts/:id/submit` | Submit for scoring |
 | `GET` | `/api/student/results` | All results |
@@ -364,6 +381,8 @@ Server starts at **http://localhost:8000**.
 
 ## Security
 
+### Implemented
+
 - bcrypt (cost 12) with legacy scrypt migration
 - JWT 7-day expiry with configurable secret
 - Sensitive fields excluded from queries (`select: false`)
@@ -372,6 +391,16 @@ Server starts at **http://localhost:8000**.
 - Helmet security headers globally
 - Multer file limits: 5–8 MB
 - Centralized error handler
+
+### Audit Findings (requires attention)
+
+| Severity | Issue | Location | Fix |
+|---|---|---|---|
+| **Critical** | Live API keys (Groq, SMTP, OpenAI, NVIDIA) committed to git history | `.env` tracked in git history | Rotate all keys immediately; add `.env` to `.gitignore`; purge from git history |
+| **Critical** | `JWT_SECRET` set to placeholder `"your-secret-key-change-this-in-production"` | `.env` | Set a strong, unique secret via `openssl rand -hex 64` |
+| **High** | CORS callback allows any origin when `CLIENT_URL` is undefined | `server.js` | Restrict with explicit allow list or throw on missing origin |
+| **High** | Signup (`POST /api/auth/signup`) assigns `master_admin` by default | `authRoutes.js` | Default role should be `student` |
+| **High** | Login has no rate limiting | `authRoutes.js` | Apply `express-rate-limit` to login endpoint |
 
 ---
 
