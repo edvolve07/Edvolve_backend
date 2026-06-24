@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { recordAiUsage } from '../../services/aiUsageService.js';
 import { CONCEPTS } from '../utils/constants.js';
 import { badRequest } from '../utils/httpError.js';
-import { Question } from '../models/Question.js';
+import { Question, Op } from '../../database/index.js';
 
 function extractJson(text) {
   const trimmed = text.trim();
@@ -597,10 +597,13 @@ export async function generateAssessmentJson(config, fileContext = '') {
   // Fetch existing question texts for the same concept to avoid duplicates
   let existingQuestionTexts = [];
   try {
-    const existingQuestions = await Question.find(
-      { concept: config.concept === 'All Concepts' ? { $exists: true } : config.concept },
-      { question_text: 1, _id: 0 },
-    ).lean();
+    const whereClause = config.concept === 'All Concepts'
+      ? { concept: { [Op.ne]: null } }
+      : { concept: config.concept };
+    const existingQuestions = await Question.findAll({
+      where: whereClause,
+      attributes: ['question_text'],
+    });
     existingQuestionTexts = existingQuestions.map((q) => q.question_text);
   } catch {
     // Non-critical — proceed without existing context

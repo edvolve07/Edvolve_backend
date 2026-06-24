@@ -1,4 +1,4 @@
-import { collections } from "../db.js";
+import { AiUsage, Op, getSequelize } from "../database/index.js";
 
 function safeNumber(value) {
   const number = Number(value || 0);
@@ -14,8 +14,7 @@ export async function recordAiUsage({
   metadata = {}
 }) {
   try {
-    const { aiUsage } = collections();
-    await aiUsage.insertOne({
+    await AiUsage.create({
       provider,
       model,
       feature,
@@ -24,7 +23,6 @@ export async function recordAiUsage({
       completion_tokens: safeNumber(usage.completion_tokens ?? usage.completionTokens),
       total_tokens: safeNumber(usage.total_tokens ?? usage.totalTokens),
       metadata,
-      created_at: new Date()
     });
   } catch {
     // Usage tracking must never break the user-facing AI workflow.
@@ -32,85 +30,72 @@ export async function recordAiUsage({
 }
 
 export async function summarizeAiUsage({ days = 30, limit = 12 } = {}) {
-  const { aiUsage } = collections();
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const match = { created_at: { $gte: since } };
+  const sequelize = getSequelize();
 
-  const [totals, byFeature, byProvider, recent] = await Promise.all([
-    aiUsage.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: null,
-          requests: { $sum: 1 },
-          successful_requests: { $sum: { $cond: [{ $eq: ["$status", "success"] }, 1, 0] } },
-          failed_requests: { $sum: { $cond: [{ $eq: ["$status", "error"] }, 1, 0] } },
-          prompt_tokens: { $sum: "$prompt_tokens" },
-          completion_tokens: { $sum: "$completion_tokens" },
-          total_tokens: { $sum: "$total_tokens" }
-        }
-      },
-      { $project: { _id: 0 } }
-    ]).toArray(),
-    aiUsage.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: "$feature",
-          requests: { $sum: 1 },
-          total_tokens: { $sum: "$total_tokens" }
-        }
-      },
-      { $sort: { requests: -1 } },
-      { $limit: limit },
-      { $project: { _id: 0, feature: "$_id", requests: 1, total_tokens: 1 } }
-    ]).toArray(),
-    aiUsage.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: { provider: "$provider", model: "$model" },
-          requests: { $sum: 1 },
-          total_tokens: { $sum: "$total_tokens" }
-        }
-      },
-      { $sort: { requests: -1 } },
-      { $limit: limit },
-      {
-        $project: {
-          _id: 0,
-          provider: "$_id.provider",
-          model: "$_id.model",
-          requests: 1,
-          total_tokens: 1
-        }
-      }
-    ]).toArray(),
-    aiUsage.find(match, {
-      projection: {
-        _id: 0,
-        provider: 1,
-        model: 1,
-        feature: 1,
-        status: 1,
-        total_tokens: 1,
-        created_at: 1
-      }
-    }).sort({ created_at: -1 }).limit(limit).toArray()
+  const [totalsResult, byFeature, byProvider, recent] = await Promise.all([
+    AiUsage.findAll({
+      where: { created_at: { [Op.gte]: since } },
+      attributes: [
+        [sequelize.fn('COUNT', sequelize.col('_id')), 'requests'],
+        [sequelize.fn('SUM', sequelize.literal("CASE WHEN status = 'success' THEN 1 ELSE 0 END")), 'successful_requests'],
+        [sequelize.fn('SUM', sequelize.literal("CASE WHEN status = 'error' THEN 1 ELSE 0 END")), 'failed_requests'],
+        [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('prompt_tokens')), 0), 'prompt_tokens'],
+        [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('completion_tokens')), 0), 'completion_tokens'],
+        [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('total_tokens')), 0), 'total_tokens'],
+      ],
+      raw: true,
+    }),
+    AiUsage.findAll({
+      where: { created_at: { [Op.gte]: since } },
+      attributes: [
+        'feature',
+        [sequelize.fn('COUNT', sequelize.col('_id')), 'requests'],
+        [sequelize.fn('SUM', sequelize.literal("CASE WHEN status = 'success' THEN 1 ELSE 0 END")), 'successful_requests'],
+        [sequelize.fn('SUM', sequelize.literal("CASE WHEN status = 'error' THEN 1 ELSE 0 END")), 'failed_requests'],
+        [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('total_tokens')), 0), 'total_tokens'],
+      ],
+      group: ['feature'],
+      order: [[sequelize.literal('requests'), 'DESC']],
+      limit,
+      raw: true,
+    }),
+    AiUsage.findAll({
+      where: { created_at: { [Op.gte]: since } },
+      attributes: [
+        'provider',
+        'model',
+        [sequelize.fn('COUNT', sequelize.col('_id')), 'requests'],
+        [sequelize.fn('SUM', sequelize.literal("CASE WHEN status = 'success' THEN 1 ELSE 0 END")), 'successful_requests'],
+        [sequelize.fn('SUM', sequelize.literal("CASE WHEN status = 'error' THEN 1 ELSE 0 END")), 'failed_requests'],
+        [sequelize.fn('COALESCE', sequelize.fn('SUM', sequelize.col('total_tokens')), 0), 'total_tokens'],
+      ],
+      group: ['provider', 'model'],
+      order: [[sequelize.literal('requests'), 'DESC']],
+      limit,
+      raw: true,
+    }),
+    AiUsage.findAll({
+      where: { created_at: { [Op.gte]: since } },
+      attributes: ['provider', 'model', 'feature', 'status', 'total_tokens', 'created_at'],
+      order: [['created_at', 'DESC']],
+      limit,
+      raw: true,
+    }),
   ]);
 
   return {
     window_days: days,
-    totals: totals[0] || {
+    totals: totalsResult[0] || {
       requests: 0,
       successful_requests: 0,
       failed_requests: 0,
       prompt_tokens: 0,
       completion_tokens: 0,
-      total_tokens: 0
+      total_tokens: 0,
     },
     by_feature: byFeature,
     by_provider: byProvider,
-    recent
+    recent,
   };
 }

@@ -69,7 +69,7 @@ async function deliverEmail({ to, subject, text, html }) {
     await client.command('AUTH LOGIN', 334);
     await client.command(Buffer.from(process.env.SMTP_USER).toString('base64'), 334);
     await client.command(Buffer.from(process.env.SMTP_PASS).toString('base64'), 235);
-    await client.command(`MAIL FROM:<${escapeAddress(from)}>`, 250);
+    await client.command(`MAIL FROM:<${process.env.SMTP_USER}>`, 250);
     await client.command(`RCPT TO:<${escapeAddress(to)}>`, [250, 251]);
     await client.command('DATA', 354);
     await client.command(`${escapeData(createMessage({ to, subject, text, html }))}\r\n.`, 250);
@@ -222,8 +222,8 @@ function createSmtpClient({ host, port, secure }) {
 
   attach(
     secure
-      ? tls.connect({ host, port, servername: host, timeout: 15000 })
-      : net.connect({ host, port, timeout: 15000 }),
+      ? tls.connect({ host, port, servername: host, timeout: 30000, family: 4 })
+      : net.connect({ host, port, timeout: 30000, family: 4 }),
   );
 
   function waitFor(expectedCodes) {
@@ -256,7 +256,7 @@ function createSmtpClient({ host, port, secure }) {
   }
 
   async function startTls() {
-    socket = tls.connect({ socket, servername: host, timeout: 15000 });
+    socket = tls.connect({ socket, servername: host, timeout: 30000, family: 4 });
     buffer = '';
     attach(socket);
     await new Promise((resolve, reject) => {
@@ -286,6 +286,36 @@ export function getPasswordResetBaseUrl(req) {
   return 'http://localhost:5173';
 }
 
+export async function sendEmailVerificationEmail({ to, name, verifyLink }) {
+  if (!isEmailServiceConfigured()) return;
+
+  const subject = 'Verify your email address';
+  const html = `<!DOCTYPE html>
+<html><body style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px;">
+<div style="background: #f9fafb; border-radius: 8px; padding: 24px;">
+<h2 style="color: #111827; margin: 0 0 8px;">Verify Your Email</h2>
+<p style="color: #4b5563; line-height: 1.5;">
+  Hi ${escapeHtml(name)},<br><br>
+  Please verify your email address by clicking the button below.
+  This link expires in 24 hours.
+</p>
+<div style="text-align: center; margin: 24px 0;">
+  <a href="${escapeHtml(verifyLink)}"
+     style="background: #059669; color: #fff; padding: 12px 32px; border-radius: 6px;
+            text-decoration: none; display: inline-block; font-weight: 600;">
+    Verify Email
+  </a>
+</div>
+<p style="color: #6b7280; font-size: 13px; line-height: 1.5;">
+  If you did not create an account, you can safely ignore this email.<br>
+  &mdash; Edvolve Team
+</p>
+</div></body></html>`;
+
+  await deliverEmail({ to, subject, html });
+  console.log(`[email] Verification email sent to ${to}`);
+}
+
 export async function sendPasswordResetEmail({ to, name, resetLink }) {
   if (!isEmailServiceConfigured()) {
     throw new Error('SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM.');
@@ -312,7 +342,7 @@ export async function sendPasswordResetEmail({ to, name, resetLink }) {
     await client.command('AUTH LOGIN', 334);
     await client.command(Buffer.from(process.env.SMTP_USER).toString('base64'), 334);
     await client.command(Buffer.from(process.env.SMTP_PASS).toString('base64'), 235);
-    await client.command(`MAIL FROM:<${escapeAddress(from)}>`, 250);
+    await client.command(`MAIL FROM:<${process.env.SMTP_USER}>`, 250);
     await client.command(`RCPT TO:<${escapeAddress(to)}>`, [250, 251]);
     await client.command('DATA', 354);
     await client.command(`${escapeData(createMessage({ to, subject, text, html }))}\r\n.`, 250);
@@ -459,7 +489,7 @@ export async function sendAccountCreationEmail({ to, name, tempPassword }) {
     await client.command('AUTH LOGIN', 334);
     await client.command(Buffer.from(process.env.SMTP_USER).toString('base64'), 334);
     await client.command(Buffer.from(process.env.SMTP_PASS).toString('base64'), 235);
-    await client.command(`MAIL FROM:<${escapeAddress(from)}>`, 250);
+    await client.command(`MAIL FROM:<${process.env.SMTP_USER}>`, 250);
     await client.command(`RCPT TO:<${escapeAddress(to)}>`, [250, 251]);
     await client.command('DATA', 354);
     await client.command(`${escapeData(createMessage({ to, subject, text, html }))}\r\n.`, 250);

@@ -522,11 +522,11 @@ export async function evaluateSubmission(
   timeLimit,
   memoryLimitMb = 256,
 ) {
-  if (process.env.CODE_RUNNER_PROVIDER === 'judge0') {
-    return evaluateJudge0Submission(code, language, testCases, timeLimit, memoryLimitMb);
+  if (process.env.CODE_RUNNER_PROVIDER === 'local') {
+    throw new Error('Local code execution is disabled for security. Use Judge0 in production.');
   }
 
-  return evaluateLocalSubmission(code, language, testCases, timeLimit);
+  return evaluateJudge0Submission(code, language, testCases, timeLimit, memoryLimitMb);
 }
 
 export async function getCodeRunnerHealth({ deep = false } = {}) {

@@ -1,42 +1,45 @@
 import express from 'express';
 import PDFDocument from 'pdfkit';
 import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
-import { Assessment } from '../models/Assessment.js';
-import { AssessmentAttempt } from '../models/AssessmentAttempt.js';
-import { Question } from '../models/Question.js';
-import { ProctoringEvent } from '../models/ProctoringEvent.js';
-import { ResumeVersion } from '../models/ResumeVersion.js';
-import { StudentAnswer } from '../models/StudentAnswer.js';
-import { StudentCertificate } from '../models/StudentCertificate.js';
-import { ProgrammingProblem } from '../../programming/models/ProgrammingProblem.js';
-import { ProgrammingAssessmentAttempt } from '../../programming/models/ProgrammingAssessmentAttempt.js';
-import { ProgrammingSubmission } from '../../programming/models/ProgrammingSubmission.js';
-import { collections } from '../../db.js';
+import {
+  Op,
+  Assessment,
+  AssessmentAttempt,
+  Question,
+  ProctoringEvent,
+  ResumeVersion,
+  StudentAnswer,
+  StudentCertificate,
+  ProgrammingProblem,
+  ProgrammingAssessmentAttempt,
+  ProgrammingSubmission,
+  InterviewReport,
+} from '../../database/index.js';
 import { evaluateAttempt } from '../services/scoringService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, forbidden, notFound } from '../utils/httpError.js';
 import { toStudentQuestion } from '../utils/questionValidation.js';
-import { visibleProblemFilter } from '../../programming/utils/problemVisibility.js';
+import { INVALID_PROBLEM_TITLE_PATTERN } from '../../programming/utils/problemVisibility.js';
 
 const router = express.Router();
 
 router.use(requireAuth, requireRole('student'));
 
 async function serializeAssessment(assessment) {
-  const totalQuestions = await Question.countDocuments({
-    assessment_id: assessment._id,
+  const totalQuestions = await Question.count({
+    where: { assessment_id: assessment._id },
   });
 
   const subtract530 = (date) => {
     if (!date) return null;
 
     const d = new Date(date);
-    d.setMinutes(d.getMinutes() - 330); 
+    d.setMinutes(d.getMinutes() - 330);
     return d;
   };
 
   return {
-    id: assessment._id.toString(),
+    id: assessment._id,
     title: assessment.title,
     concept: assessment.concept,
     difficulty: assessment.difficulty,
@@ -57,13 +60,13 @@ function ensureAvailable(assessment) {
     if (!date) return null;
 
     const d = new Date(date);
-    d.setMinutes(d.getMinutes() - 330); 
+    d.setMinutes(d.getMinutes() - 330);
     return d;
   };
 
   const check_start_time = subtract530(assessment.start_time);
   const check_end_time = subtract530(assessment.end_time);
-  
+
   if (check_start_time && now < check_start_time) {
     throw forbidden('Assessment has not started yet');
   }
@@ -356,7 +359,7 @@ function buildPdfBuffer(draw) {
 
 function serializeResumeVersion(version) {
   return {
-    id: version._id.toString(),
+    id: version._id,
     version: version.version,
     title: version.title,
     target_role: version.target_role,
@@ -406,15 +409,14 @@ function drawResumeListSection(doc, label, items = []) {
 router.get(
   '/dashboard',
   asyncHandler(async (req, res) => {
-    const { reports } = collections();
-    const studentId = req.user._id.toString();
+    const studentId = req.user._id;
     const userModules = req.user.modules_access || ['both'];
     const hasAptitude = userModules.includes('aptitude') || userModules.includes('both');
     const hasInterview = userModules.includes('ai_interview') || userModules.includes('both');
     const hasProgramming = userModules.includes('programming') || userModules.includes('both');
     const [latestResume, issuedCertificates] = await Promise.all([
-      ResumeVersion.findOne({ student_id: req.user._id }).sort({ version: -1 }),
-      StudentCertificate.find({ student_id: req.user._id }).sort({ issued_at: -1 }),
+      ResumeVersion.findOne({ where: { student_id: req.user._id }, order: [['version', 'DESC']] }),
+      StudentCertificate.findAll({ where: { student_id: req.user._id }, order: [['issued_at', 'DESC']] }),
     ]);
 
     let available = 0, submittedCount = 0, attempts = [], inProgressAttempts = [], interviewReports = [];
@@ -431,53 +433,91 @@ router.get(
 
     if (hasAptitude) {
       const aptitudeResults = await Promise.all([
-        Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
-        AssessmentAttempt.countDocuments({ student_id: req.user._id, status: 'submitted' }),
-        AssessmentAttempt.find({ student_id: req.user._id, status: 'submitted' }).populate(
-          'assessment_id',
-          'title concept difficulty passing_marks total_marks duration_minutes',
-        ),
-        AssessmentAttempt.find({ student_id: req.user._id, status: 'in_progress' })
-          .populate('assessment_id', 'title concept difficulty passing_marks total_marks duration_minutes')
-          .sort({ updatedAt: -1, started_at: -1 })
-          .limit(5),
-        Assessment.find({ status: 'published', is_deleted: { $ne: true } })
-          .sort({ start_time: 1, created_at: -1 })
-          .limit(1),
+        Assessment.count({ where: { status: 'published', is_deleted: { [Op.ne]: true } } }),
+        AssessmentAttempt.count({ where: { student_id: req.user._id, status: 'submitted' } }),
+        AssessmentAttempt.findAll({ where: { student_id: req.user._id, status: 'submitted' } }),
+        AssessmentAttempt.findAll({
+          where: { student_id: req.user._id, status: 'in_progress' },
+          order: [['updated_at', 'DESC'], ['started_at', 'DESC']],
+          limit: 5,
+        }),
+        Assessment.findOne({
+          where: { status: 'published', is_deleted: { [Op.ne]: true } },
+          order: [['start_time', 'ASC'], ['created_at', 'DESC']],
+        }),
       ]);
       available = aptitudeResults[0];
       submittedCount = aptitudeResults[1];
       attempts = aptitudeResults[2];
       inProgressAttempts = aptitudeResults[3];
-      nextAssessment = aptitudeResults[4][0] || null;
+      nextAssessment = aptitudeResults[4];
+
+      const allAttempts = [...attempts, ...inProgressAttempts];
+      const assessmentIds = [...new Set(allAttempts.map(a => a.assessment_id).filter(Boolean))];
+      if (assessmentIds.length) {
+        const assessments = await Assessment.findAll({
+          where: { _id: assessmentIds },
+          attributes: ['_id', 'title', 'concept', 'difficulty', 'passing_marks', 'total_marks', 'duration_minutes'],
+        });
+        const assessmentMap = Object.fromEntries(assessments.map(a => [a._id, a]));
+        allAttempts.forEach(a => {
+          if (assessmentMap[a.assessment_id]) {
+            a.setDataValue('assessment_id', assessmentMap[a.assessment_id]);
+          }
+        });
+      }
     }
 
     if (hasProgramming) {
-      const [totalSubmissions, accepted, wrong, pending, totalProblems, solvedProblemIds, recentProgrammingSubmissions] = await Promise.all([
-        ProgrammingSubmission.countDocuments({ student_id: req.user._id }),
-        ProgrammingSubmission.countDocuments({ student_id: req.user._id, status: 'accepted' }),
-        ProgrammingSubmission.countDocuments({
-          student_id: req.user._id,
-          status: { $in: ['wrong_answer', 'time_limit_exceeded', 'runtime_error', 'compilation_error'] },
+      const [totalSubmissions, accepted, wrong, pending, totalProblems, solvedProblemSubmissions, recentProgrammingSubmissions] = await Promise.all([
+        ProgrammingSubmission.count({ where: { student_id: req.user._id } }),
+        ProgrammingSubmission.count({ where: { student_id: req.user._id, status: 'accepted' } }),
+        ProgrammingSubmission.count({
+          where: {
+            student_id: req.user._id,
+            status: { [Op.in]: ['wrong_answer', 'time_limit_exceeded', 'runtime_error', 'compilation_error'] },
+          },
         }),
-        ProgrammingSubmission.countDocuments({
-          student_id: req.user._id,
-          status: { $in: ['pending', 'running'] },
+        ProgrammingSubmission.count({
+          where: {
+            student_id: req.user._id,
+            status: { [Op.in]: ['pending', 'running'] },
+          },
         }),
-        ProgrammingProblem.countDocuments(visibleProblemFilter({
-          status: 'published',
-          is_deleted: { $ne: true },
-          is_auto_gradable: { $ne: false },
-        })),
-        ProgrammingSubmission.distinct('problem_id', {
-          student_id: req.user._id,
-          status: 'accepted',
+        ProgrammingProblem.count({
+          where: {
+            status: 'published',
+            is_deleted: { [Op.ne]: true },
+            is_auto_gradable: { [Op.ne]: false },
+            title: { [Op.notIRegexp]: INVALID_PROBLEM_TITLE_PATTERN.source },
+          },
         }),
-        ProgrammingSubmission.find({ student_id: req.user._id })
-          .populate('problem_id', 'title concept difficulty')
-          .sort({ submitted_at: -1 })
-          .limit(25),
+        ProgrammingSubmission.findAll({
+          where: { student_id: req.user._id, status: 'accepted' },
+          attributes: ['problem_id'],
+        }),
+        ProgrammingSubmission.findAll({
+          where: { student_id: req.user._id },
+          order: [['submitted_at', 'DESC']],
+          limit: 25,
+        }),
       ]);
+      const solvedProblemIds = [...new Set(solvedProblemSubmissions.map(s => s.problem_id))];
+
+      const problemIds = [...new Set(recentProgrammingSubmissions.map(s => s.problem_id).filter(Boolean))];
+      if (problemIds.length) {
+        const problems = await ProgrammingProblem.findAll({
+          where: { _id: problemIds },
+          attributes: ['_id', 'title', 'concept', 'difficulty'],
+        });
+        const problemMap = Object.fromEntries(problems.map(p => [p._id, p]));
+        recentProgrammingSubmissions.forEach(s => {
+          if (problemMap[s.problem_id]) {
+            s.setDataValue('problem_id', problemMap[s.problem_id]);
+          }
+        });
+      }
+
       programmingStats = {
         total_submissions: totalSubmissions,
         total_problems: totalProblems,
@@ -490,26 +530,12 @@ router.get(
     }
 
     if (hasInterview) {
-      interviewReports = await reports
-        .find(
-          { student_id: studentId },
-          {
-            projection: {
-              _id: 0,
-              session_id: 1,
-              report_id: 1,
-              generated_date: 1,
-              interview_domain: 1,
-              interview_role: 1,
-              overall: 1,
-              ats_analysis: 1,
-              created_at: 1,
-            },
-          },
-        )
-        .sort({ created_at: -1 })
-        .limit(25)
-        .toArray();
+      interviewReports = await InterviewReport.findAll({
+        where: { student_id: req.user._id },
+        attributes: ['session_id', 'report_id', 'generated_date', 'interview_domain', 'interview_role', 'overall', 'ats_analysis', 'created_at'],
+        order: [['created_at', 'DESC']],
+        limit: 25,
+      });
     }
 
     const attemptAnalytics = attempts
@@ -521,7 +547,7 @@ router.get(
         const timeTakenSeconds = started && submitted ? Math.max(0, Math.round((submitted - started) / 1000)) : 0;
 
         return {
-          id: attempt._id.toString(),
+          id: attempt._id,
           assessment_title: assessment?.title || 'Assessment',
           concept: assessment?.concept || '',
           difficulty: assessment?.difficulty || '',
@@ -546,8 +572,8 @@ router.get(
       const progress = totalSeconds ? Math.min(99, Math.round((elapsedSeconds / totalSeconds) * 100)) : 0;
 
       return {
-        id: attempt._id.toString(),
-        assessment_id: assessment?._id?.toString() || '',
+        id: attempt._id,
+        assessment_id: assessment?._id || '',
         assessment_title: assessment?.title || 'Assessment',
         concept: assessment?.concept || '',
         difficulty: assessment?.difficulty || '',
@@ -605,8 +631,8 @@ router.get(
             ? Math.round((programmingStats.solved_unique / programmingStats.total_problems) * 100)
             : 0,
           recent_submissions: programmingStats.recent_submissions.map((submission) => ({
-            id: submission._id.toString(),
-            problem_id: submission.problem_id?._id?.toString() || submission.problem_id?.toString?.() || '',
+            id: submission._id,
+            problem_id: submission.problem_id?._id || submission.problem_id || '',
             title: submission.problem_id?.title || 'Coding problem',
             concept: submission.problem_id?.concept || '',
             difficulty: submission.problem_id?.difficulty || '',
@@ -801,7 +827,7 @@ router.get(
     res.json({
       generated_at: new Date(),
       user: {
-        id: req.user._id.toString(),
+        id: req.user._id,
         role: req.user.role,
         modules_access: userModules,
         interested_role: req.user.interested_role || '',
@@ -821,7 +847,7 @@ router.get(
       learning_path: learningPath,
       certificates: {
         issued: issuedCertificates.map((certificate) => ({
-          id: certificate._id.toString(),
+          id: certificate._id,
           milestone: certificate.milestone,
           title: certificate.title,
           description: certificate.description,
@@ -833,7 +859,7 @@ router.get(
       resume_builder: {
         latest_version: latestResume
           ? {
-              id: latestResume._id.toString(),
+              id: latestResume._id,
               version: latestResume.version,
               title: latestResume.title,
               target_role: latestResume.target_role,
@@ -865,7 +891,7 @@ router.get(
 router.get(
   '/resume-builder',
   asyncHandler(async (req, res) => {
-    const versions = await ResumeVersion.find({ student_id: req.user._id }).sort({ version: -1 }).limit(20);
+    const versions = await ResumeVersion.findAll({ where: { student_id: req.user._id }, order: [['version', 'DESC']], limit: 20 });
     res.json({
       versions: versions.map(serializeResumeVersion),
     });
@@ -875,7 +901,7 @@ router.get(
 router.post(
   '/resume-builder/versions',
   asyncHandler(async (req, res) => {
-    const latest = await ResumeVersion.findOne({ student_id: req.user._id }).sort({ version: -1 });
+    const latest = await ResumeVersion.findOne({ where: { student_id: req.user._id }, order: [['version', 'DESC']] });
     const nextVersion = (latest?.version || 0) + 1;
     const payload = {
       title: String(req.body.title || 'Resume').trim().slice(0, 80) || 'Resume',
@@ -910,7 +936,7 @@ router.post(
 router.get(
   '/resume-builder/versions/:id/pdf',
   asyncHandler(async (req, res) => {
-    const version = await ResumeVersion.findOne({ _id: req.params.id, student_id: req.user._id });
+    const version = await ResumeVersion.findOne({ where: { _id: req.params.id, student_id: req.user._id } });
     if (!version) throw notFound('Resume version not found');
 
     const pdf = await buildPdfBuffer((doc) => {
@@ -957,15 +983,37 @@ router.post(
   '/certificates/:milestone/issue',
   asyncHandler(async (req, res) => {
     const milestone = String(req.params.milestone || '');
-    const [acceptedProblemIds, submittedAttempts, interviewReports, existingCertificate] = await Promise.all([
-      ProgrammingSubmission.distinct('problem_id', { student_id: req.user._id, status: 'accepted' }),
-      AssessmentAttempt.find({ student_id: req.user._id, status: 'submitted' }).populate('assessment_id', 'passing_marks'),
-      collections().reports.find(
-        { student_id: req.user._id.toString() },
-        { projection: { overall: 1, ats_analysis: 1, created_at: 1 } },
-      ).sort({ created_at: -1 }).limit(50).toArray(),
-      StudentCertificate.findOne({ student_id: req.user._id, milestone }),
+    const [acceptedProblemSubmissions, submittedAttempts, interviewReports, existingCertificate] = await Promise.all([
+      ProgrammingSubmission.findAll({
+        where: { student_id: req.user._id, status: 'accepted' },
+        attributes: ['problem_id'],
+      }),
+      AssessmentAttempt.findAll({ where: { student_id: req.user._id, status: 'submitted' } }),
+      InterviewReport.findAll({
+        where: { student_id: req.user._id },
+        attributes: ['overall', 'ats_analysis', 'created_at'],
+        order: [['created_at', 'DESC']],
+        limit: 50,
+      }),
+      StudentCertificate.findOne({ where: { student_id: req.user._id, milestone } }),
     ]);
+
+    const acceptedProblemIds = [...new Set(acceptedProblemSubmissions.map(s => s.problem_id))];
+
+    const assessmentIds = [...new Set(submittedAttempts.map(a => a.assessment_id).filter(Boolean))];
+    if (assessmentIds.length) {
+      const assessments = await Assessment.findAll({
+        where: { _id: assessmentIds },
+        attributes: ['_id', 'passing_marks'],
+      });
+      const assessmentMap = Object.fromEntries(assessments.map(a => [a._id, a]));
+      submittedAttempts.forEach(a => {
+        if (assessmentMap[a.assessment_id]) {
+          a.setDataValue('assessment_id', assessmentMap[a.assessment_id]);
+        }
+      });
+    }
+
     if (existingCertificate) {
       res.json({ certificate: existingCertificate });
       return;
@@ -1010,7 +1058,7 @@ router.post(
 router.get(
   '/certificates/:id/pdf',
   asyncHandler(async (req, res) => {
-    const certificate = await StudentCertificate.findOne({ _id: req.params.id, student_id: req.user._id });
+    const certificate = await StudentCertificate.findOne({ where: { _id: req.params.id, student_id: req.user._id } });
     if (!certificate) throw notFound('Certificate not found');
     const pdf = await buildPdfBuffer((doc) => {
       doc.rect(36, 36, 540, 720).stroke('#059669');
@@ -1047,7 +1095,7 @@ router.post(
     }
 
     const AttemptModel = assessmentType === 'programming' ? ProgrammingAssessmentAttempt : AssessmentAttempt;
-    const attempt = await AttemptModel.findById(req.body.attempt_id);
+    const attempt = await AttemptModel.findByPk(req.body.attempt_id);
     if (!attempt) throw notFound('Attempt not found');
     if (attempt.student_id.toString() !== req.user._id.toString()) throw forbidden();
 
@@ -1060,10 +1108,10 @@ router.post(
       severity,
       metadata: req.body.metadata || {},
     });
-    const count = await ProctoringEvent.countDocuments({ attempt_id: attempt._id, assessment_type: assessmentType });
+    const count = await ProctoringEvent.count({ where: { attempt_id: attempt._id, assessment_type: assessmentType } });
     res.status(201).json({
       event: {
-        id: event._id.toString(),
+        id: event._id,
         event_type: event.event_type,
         severity: event.severity,
         occurred_at: event.occurred_at,
@@ -1076,13 +1124,17 @@ router.post(
 router.get(
   '/assessments',
   requireModuleAccess('aptitude'),
-  asyncHandler(async (_req, res) => {
-    const assessments = await Assessment.find({
+  asyncHandler(async (req, res) => {
+    const filter = {
       status: 'published',
-      is_deleted: { $ne: true },
-    }).sort({ created_at: -1 });
+      is_deleted: { [Op.ne]: true },
+    };
+    if (req.user.institutionId) {
+      filter.institutionId = req.user.institutionId;
+    }
+    const assessments = await Assessment.findAll({ where: filter, order: [['created_at', 'DESC']] });
 
-    console.log(`Fetched ${assessments} published assessments for student dashboard`);
+    console.log(`Fetched ${assessments.length} published assessments for student dashboard`);
     res.json({ assessments: await Promise.all(assessments.map(serializeAssessment)) });
   }),
 );
@@ -1091,14 +1143,28 @@ router.post(
   '/assessments/:id/start',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
     ensureAvailable(assessment);
 
+    const existingSubmitted = await AssessmentAttempt.findOne({
+      where: {
+        assessment_id: assessment._id,
+        student_id: req.user._id,
+        status: 'submitted',
+      },
+    });
+
+    if (existingSubmitted) {
+      throw forbidden('You have already submitted this assessment and cannot retake it.');
+    }
+
     let attempt = await AssessmentAttempt.findOne({
-      assessment_id: assessment._id,
-      student_id: req.user._id,
-      status: 'in_progress',
+      where: {
+        assessment_id: assessment._id,
+        student_id: req.user._id,
+        status: 'in_progress',
+      },
     });
 
     if (!attempt) {
@@ -1108,16 +1174,16 @@ router.post(
       });
     }
 
-    const questions = await Question.find({ assessment_id: assessment._id }).sort({ created_at: 1 });
-    const answers = await StudentAnswer.find({ attempt_id: attempt._id });
+    const questions = await Question.findAll({ where: { assessment_id: assessment._id }, order: [['created_at', 'ASC']] });
+    const answers = await StudentAnswer.findAll({ where: { attempt_id: attempt._id } });
     const selected = Object.fromEntries(
-      answers.map((answer) => [answer.question_id.toString(), answer.selected_option]),
+      answers.map((answer) => [answer.question_id, answer.selected_option]),
     );
 
     res.json({
       assessment: await serializeAssessment(assessment),
       attempt: {
-        id: attempt._id.toString(),
+        id: attempt._id,
         started_at: attempt.started_at,
         extra_time_minutes: attempt.extra_time_minutes || 0,
         status: attempt.status,
@@ -1132,16 +1198,18 @@ router.get(
   '/attempts/:attemptId/time',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const attempt = await AssessmentAttempt.findById(req.params.attemptId).populate(
-      'assessment_id',
-      'duration_minutes',
-    );
+    const attempt = await AssessmentAttempt.findByPk(req.params.attemptId);
     if (!attempt) throw notFound('Attempt not found');
     if (attempt.student_id.toString() !== req.user._id.toString()) throw forbidden();
 
+    const assessment = await Assessment.findByPk(attempt.assessment_id, {
+      attributes: ['_id', 'duration_minutes'],
+    });
+    attempt.setDataValue('assessment_id', assessment);
+
     res.json({
       attempt: {
-        id: attempt._id.toString(),
+        id: attempt._id,
         started_at: attempt.started_at,
         status: attempt.status,
         extra_time_minutes: attempt.extra_time_minutes || 0,
@@ -1161,21 +1229,24 @@ router.put(
       throw badRequest('Selected option must be A, B, C, D, or null');
     }
 
-    const attempt = await AssessmentAttempt.findById(req.params.attemptId);
+    const attempt = await AssessmentAttempt.findByPk(req.params.attemptId);
     if (!attempt) throw notFound('Attempt not found');
     if (attempt.student_id.toString() !== req.user._id.toString()) throw forbidden();
     if (attempt.status !== 'in_progress') throw badRequest('Attempt already submitted');
 
-    const question = await Question.findById(question_id);
+    const question = await Question.findByPk(question_id);
     if (!question || question.assessment_id.toString() !== attempt.assessment_id.toString()) {
       throw badRequest('Question does not belong to this attempt');
     }
 
-    await StudentAnswer.findOneAndUpdate(
-      { attempt_id: attempt._id, question_id: question._id },
-      { selected_option },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
+    const [answerRecord] = await StudentAnswer.findOrCreate({
+      where: { attempt_id: attempt._id, question_id: question._id },
+      defaults: { selected_option: selected_option ?? null },
+    });
+    if (answerRecord.selected_option !== selected_option) {
+      answerRecord.selected_option = selected_option;
+      await answerRecord.save();
+    }
 
     res.json({ saved: true });
   }),
@@ -1185,18 +1256,18 @@ router.post(
   '/attempts/:attemptId/submit',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const attempt = await AssessmentAttempt.findById(req.params.attemptId);
+    const attempt = await AssessmentAttempt.findByPk(req.params.attemptId);
     if (!attempt) throw notFound('Attempt not found');
     if (attempt.student_id.toString() !== req.user._id.toString()) throw forbidden();
 
-    const assessment = await Assessment.findById(attempt.assessment_id);
+    const assessment = await Assessment.findByPk(attempt.assessment_id);
     if (!assessment) throw notFound('Assessment not found');
 
     if (attempt.status === 'submitted') {
       return res.json({ attempt });
     }
 
-    const questions = await Question.find({ assessment_id: assessment._id });
+    const questions = await Question.findAll({ where: { assessment_id: assessment._id } });
     const evaluated = await evaluateAttempt(attempt, assessment, questions);
     res.json({ attempt: evaluated });
   }),
@@ -1206,16 +1277,31 @@ router.get(
   '/results',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const attempts = await AssessmentAttempt.find({
-      student_id: req.user._id,
-      status: 'submitted',
-    })
-      .populate('assessment_id', 'title concept difficulty passing_marks total_marks')
-      .sort({ submitted_at: -1 });
+    const attempts = await AssessmentAttempt.findAll({
+      where: {
+        student_id: req.user._id,
+        status: 'submitted',
+      },
+      order: [['submitted_at', 'DESC']],
+    });
+
+    const assessmentIds = [...new Set(attempts.map(a => a.assessment_id).filter(Boolean))];
+    if (assessmentIds.length) {
+      const assessments = await Assessment.findAll({
+        where: { _id: assessmentIds },
+        attributes: ['_id', 'title', 'concept', 'difficulty', 'passing_marks', 'total_marks'],
+      });
+      const assessmentMap = Object.fromEntries(assessments.map(a => [a._id, a]));
+      attempts.forEach(a => {
+        if (assessmentMap[a.assessment_id]) {
+          a.setDataValue('assessment_id', assessmentMap[a.assessment_id]);
+        }
+      });
+    }
 
     res.json({
       results: attempts.map((attempt) => ({
-        id: attempt._id.toString(),
+        id: attempt._id,
         assessment_title: attempt.assessment_id?.title || 'Assessment',
         concept: attempt.assessment_id?.concept || '',
         difficulty: attempt.assessment_id?.difficulty || '',
@@ -1234,25 +1320,28 @@ router.get(
   '/results/:attemptId',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const attempt = await AssessmentAttempt.findById(req.params.attemptId).populate(
-      'assessment_id',
-      'title concept difficulty total_marks passing_marks',
-    );
+    const attempt = await AssessmentAttempt.findByPk(req.params.attemptId);
     if (!attempt) throw notFound('Attempt not found');
     if (attempt.student_id.toString() !== req.user._id.toString()) throw forbidden();
     if (attempt.status !== 'submitted') throw forbidden('Results are available after submission');
 
-    const questions = await Question.find({ assessment_id: attempt.assessment_id._id }).sort({
-      created_at: 1,
+    const assessment = await Assessment.findByPk(attempt.assessment_id, {
+      attributes: ['_id', 'title', 'concept', 'difficulty', 'total_marks', 'passing_marks'],
     });
-    const answers = await StudentAnswer.find({ attempt_id: attempt._id });
+    attempt.setDataValue('assessment_id', assessment);
+
+    const questions = await Question.findAll({
+      where: { assessment_id: attempt.assessment_id._id },
+      order: [['created_at', 'ASC']],
+    });
+    const answers = await StudentAnswer.findAll({ where: { attempt_id: attempt._id } });
     const answerMap = new Map(
-      answers.map((answer) => [answer.question_id.toString(), answer]),
+      answers.map((answer) => [answer.question_id, answer]),
     );
 
     const byTopic = {};
     const details = questions.map((question) => {
-      const answer = answerMap.get(question._id.toString());
+      const answer = answerMap.get(question._id);
       if (!byTopic[question.concept]) {
         byTopic[question.concept] = { concept: question.concept, correct: 0, total: 0, score: 0 };
       }
@@ -1261,7 +1350,7 @@ router.get(
       if (answer?.is_correct) byTopic[question.concept].correct += 1;
 
       return {
-        id: question._id.toString(),
+        id: question._id,
         question_text: question.question_text,
         options: {
           A: question.option_a,
@@ -1282,7 +1371,7 @@ router.get(
 
     res.json({
       attempt: {
-        id: attempt._id.toString(),
+        id: attempt._id,
         score: attempt.score,
         percentage: attempt.percentage,
         passed: attempt.score >= attempt.assessment_id.passing_marks,
@@ -1290,7 +1379,7 @@ router.get(
         submitted_at: attempt.submitted_at,
       },
       assessment: {
-        id: attempt.assessment_id._id.toString(),
+        id: attempt.assessment_id._id,
         title: attempt.assessment_id.title,
         concept: attempt.assessment_id.concept,
         difficulty: attempt.assessment_id.difficulty,

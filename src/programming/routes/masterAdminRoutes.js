@@ -1,15 +1,14 @@
 import express from 'express';
-import { requireAuth, requireModuleAccess, requireRole } from '../../aptitude/middleware/auth.js';
-import { ProgrammingProblem } from '../models/ProgrammingProblem.js';
-import { ProgrammingSubmission } from '../models/ProgrammingSubmission.js';
+import { requireAuth, requireRole } from '../../aptitude/middleware/auth.js';
+import { Op, getSequelize, User, ProgrammingProblem, ProgrammingSubmission } from '../../database/index.js';
+import { sanitizeStudentSubmissionError } from '../utils/studentResultSerializer.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { DIFFICULTIES, STATUSES, CONCEPTS, DEFAULT_PRACTICE_LANGUAGES, LANGUAGES } from '../utils/constants.js';
 import { badRequest, notFound } from '../utils/httpError.js';
 import { ROLES } from '../../aptitude/utils/roles.js';
 import {
+  INVALID_PROBLEM_TITLE_PATTERN,
   isVisibleProblemTitle,
-  visibleProblemFilter,
-  visibleProblemTitleFilter,
 } from '../utils/problemVisibility.js';
 
 const router = express.Router();
@@ -144,21 +143,23 @@ router.get(
   '/problems',
   asyncHandler(async (req, res) => {
     const { status, difficulty, concept, page = 1, limit = 50 } = req.query;
-    const filter = visibleProblemFilter({ is_deleted: { $ne: true } });
+    const filter = { is_deleted: { [Op.ne]: true }, title: { [Op.notRegexp]: INVALID_PROBLEM_TITLE_PATTERN.source } };
     if (status) filter.status = status;
     if (difficulty) filter.difficulty = difficulty;
     if (concept) filter.concept = concept;
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
-    const skip = (pageNum - 1) * limitNum;
+    const offset = (pageNum - 1) * limitNum;
 
     const [problems, total] = await Promise.all([
-      ProgrammingProblem.find(filter)
-        .sort({ difficulty_rank: 1, curriculum_order: 1, topic_rank: 1, created_at: 1 })
-        .skip(skip)
-        .limit(limitNum),
-      ProgrammingProblem.countDocuments(filter),
+      ProgrammingProblem.findAll({
+        where: filter,
+        order: [['difficulty_rank', 'ASC'], ['curriculum_order', 'ASC'], ['topic_rank', 'ASC'], ['created_at', 'ASC']],
+        offset,
+        limit: limitNum,
+      }),
+      ProgrammingProblem.count({ where: filter }),
     ]);
 
     res.json({
@@ -176,7 +177,7 @@ router.get(
 router.get(
   '/problems/:id',
   asyncHandler(async (req, res) => {
-    const problem = await ProgrammingProblem.findById(req.params.id);
+    const problem = await ProgrammingProblem.findByPk(req.params.id);
     if (!problem || problem.is_deleted || !isVisibleProblemTitle(problem.title)) throw notFound('Problem not found');
     res.json({ problem: serializeProblem(problem) });
   }),
@@ -197,7 +198,7 @@ router.post(
 router.put(
   '/problems/:id',
   asyncHandler(async (req, res) => {
-    const problem = await ProgrammingProblem.findById(req.params.id);
+    const problem = await ProgrammingProblem.findByPk(req.params.id);
     if (!problem || problem.is_deleted || !isVisibleProblemTitle(problem.title)) throw notFound('Problem not found');
 
     const config = parseProblemPayload(req.body);
@@ -211,7 +212,7 @@ router.put(
 router.patch(
   '/problems/:id/status',
   asyncHandler(async (req, res) => {
-    const problem = await ProgrammingProblem.findById(req.params.id);
+    const problem = await ProgrammingProblem.findByPk(req.params.id);
     if (!problem || problem.is_deleted || !isVisibleProblemTitle(problem.title)) throw notFound('Problem not found');
 
     const status = String(req.body.status || '').toLowerCase();
@@ -227,7 +228,7 @@ router.patch(
 router.delete(
   '/problems/:id',
   asyncHandler(async (req, res) => {
-    const problem = await ProgrammingProblem.findById(req.params.id);
+    const problem = await ProgrammingProblem.findByPk(req.params.id);
     if (!problem || problem.is_deleted || !isVisibleProblemTitle(problem.title)) throw notFound('Problem not found');
 
     problem.is_deleted = true;
@@ -249,32 +250,47 @@ router.get(
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
-    const skip = (pageNum - 1) * limitNum;
+    const offset = (pageNum - 1) * limitNum;
 
     const [submissions, total] = await Promise.all([
-      ProgrammingSubmission.find(filter)
-        .sort({ submitted_at: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .populate('student_id', 'name email')
-        .populate('problem_id', 'title difficulty concept'),
-      ProgrammingSubmission.countDocuments(filter),
+      ProgrammingSubmission.findAll({
+        where: filter,
+        order: [['submitted_at', 'DESC']],
+        offset,
+        limit: limitNum,
+      }),
+      ProgrammingSubmission.count({ where: filter }),
     ]);
 
+    const studentIds = [...new Set(submissions.map((s) => s.student_id).filter(Boolean))];
+    const problemIds = [...new Set(submissions.map((s) => s.problem_id).filter(Boolean))];
+
+    const [students, problems] = await Promise.all([
+      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
+    ]);
+
+    const studentMap = Object.fromEntries(students.map((s) => [s._id.toString(), s]));
+    const problemMap = Object.fromEntries(problems.map((p) => [p._id.toString(), p]));
+
     res.json({
-      submissions: submissions.map((sub) => ({
-        id: sub._id.toString(),
-        student_name: sub.student_id?.name || 'Unknown',
-        student_email: sub.student_id?.email || '',
-        problem_title: sub.problem_id?.title || 'Unknown Problem',
-        problem_difficulty: sub.problem_id?.difficulty || '',
-        language: sub.language,
-        status: sub.status,
-        passed_test_cases: sub.passed_test_cases,
-        total_test_cases: sub.total_test_cases,
-        execution_time_ms: sub.execution_time_ms,
-        submitted_at: sub.submitted_at,
-      })),
+      submissions: submissions.map((sub) => {
+        const student = studentMap[sub.student_id?.toString()];
+        const problem = problemMap[sub.problem_id?.toString()];
+        return {
+          id: sub._id.toString(),
+          student_name: student?.name || 'Unknown',
+          student_email: student?.email || '',
+          problem_title: problem?.title || 'Unknown Problem',
+          problem_difficulty: problem?.difficulty || '',
+          language: sub.language,
+          status: sub.status,
+          passed_test_cases: sub.passed_test_cases,
+          total_test_cases: sub.total_test_cases,
+          execution_time_ms: sub.execution_time_ms,
+          submitted_at: sub.submitted_at,
+        };
+      }),
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -288,19 +304,26 @@ router.get(
 router.get(
   '/submissions/:id',
   asyncHandler(async (req, res) => {
-    const submission = await ProgrammingSubmission.findById(req.params.id)
-      .populate('student_id', 'name email')
-      .populate('problem_id', 'title difficulty concept');
+    const submission = await ProgrammingSubmission.findByPk(req.params.id);
 
     if (!submission) throw notFound('Submission not found');
+
+    let student = null;
+    let problem = null;
+    if (submission.student_id) {
+      student = await User.findByPk(submission.student_id, { attributes: ['name', 'email'] });
+    }
+    if (submission.problem_id) {
+      problem = await ProgrammingProblem.findByPk(submission.problem_id, { attributes: ['title', 'difficulty', 'concept'] });
+    }
 
     res.json({
       submission: {
         id: submission._id.toString(),
-        student_name: submission.student_id?.name || 'Unknown',
-        student_email: submission.student_id?.email || '',
-        problem_title: submission.problem_id?.title || 'Unknown Problem',
-        problem_difficulty: submission.problem_id?.difficulty || '',
+        student_name: student?.name || 'Unknown',
+        student_email: student?.email || '',
+        problem_title: problem?.title || 'Unknown Problem',
+        problem_difficulty: problem?.difficulty || '',
         language: submission.language,
         code: submission.code,
         status: submission.status,
@@ -308,7 +331,7 @@ router.get(
         total_test_cases: submission.total_test_cases,
         test_results: submission.test_results,
         execution_time_ms: submission.execution_time_ms,
-        error_message: submission.error_message,
+        error_message: sanitizeStudentSubmissionError(submission.error_message, submission.status),
         submitted_at: submission.submitted_at,
       },
     });
@@ -318,24 +341,40 @@ router.get(
 router.get(
   '/dashboard',
   asyncHandler(async (req, res) => {
+    const problemFilter = { is_deleted: { [Op.ne]: true }, title: { [Op.notRegexp]: INVALID_PROBLEM_TITLE_PATTERN.source } };
+    const publishedProblemFilter = { ...problemFilter, status: 'published' };
+
     const [totalProblems, publishedProblems, totalSubmissions, acceptedSubmissions, recentSubmissions] =
       await Promise.all([
-        ProgrammingProblem.countDocuments(visibleProblemFilter({ is_deleted: { $ne: true } })),
-        ProgrammingProblem.countDocuments(visibleProblemFilter({ status: 'published', is_deleted: { $ne: true } })),
-        ProgrammingSubmission.countDocuments(),
-        ProgrammingSubmission.countDocuments({ status: 'accepted' }),
-        ProgrammingSubmission.find()
-          .sort({ submitted_at: -1 })
-          .limit(20)
-          .populate('student_id', 'name email')
-          .populate('problem_id', 'title difficulty concept'),
+        ProgrammingProblem.count({ where: problemFilter }),
+        ProgrammingProblem.count({ where: publishedProblemFilter }),
+        ProgrammingSubmission.count(),
+        ProgrammingSubmission.count({ where: { status: 'accepted' } }),
+        ProgrammingSubmission.findAll({
+          order: [['submitted_at', 'DESC']],
+          limit: 20,
+        }),
       ]);
 
-    const conceptBreakdown = await ProgrammingProblem.aggregate([
-      { $match: { is_deleted: { $ne: true }, status: 'published', ...visibleProblemTitleFilter() } },
-      { $group: { _id: '$concept', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
+    const sequelize = getSequelize();
+    const conceptBreakdown = await ProgrammingProblem.findAll({
+      where: { is_deleted: { [Op.ne]: true }, status: 'published', title: { [Op.notRegexp]: INVALID_PROBLEM_TITLE_PATTERN.source } },
+      attributes: ['concept', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
+      group: ['concept'],
+      order: [[sequelize.fn('COUNT', sequelize.col('_id')), 'DESC']],
+      raw: true,
+    });
+
+    const studentIds = [...new Set(recentSubmissions.map((s) => s.student_id).filter(Boolean))];
+    const problemIds = [...new Set(recentSubmissions.map((s) => s.problem_id).filter(Boolean))];
+
+    const [students, problems] = await Promise.all([
+      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
+
+    const studentMap = Object.fromEntries(students.map((s) => [s._id.toString(), s]));
+    const problemMap = Object.fromEntries(problems.map((p) => [p._id.toString(), p]));
 
     res.json({
       total_problems: totalProblems,
@@ -346,21 +385,25 @@ router.get(
         ? Math.round((acceptedSubmissions / totalSubmissions) * 100)
         : 0,
       concept_breakdown: conceptBreakdown.map((c) => ({
-        concept: c._id,
+        concept: c.concept,
         count: c.count,
       })),
-      recent_submissions: recentSubmissions.map((sub) => ({
-        id: sub._id.toString(),
-        student_name: sub.student_id?.name || 'Unknown',
-        student_email: sub.student_id?.email || '',
-        problem_title: sub.problem_id?.title || 'Unknown',
-        problem_difficulty: sub.problem_id?.difficulty || '',
-        language: sub.language,
-        status: sub.status,
-        passed_test_cases: sub.passed_test_cases,
-        total_test_cases: sub.total_test_cases,
-        submitted_at: sub.submitted_at,
-      })),
+      recent_submissions: recentSubmissions.map((sub) => {
+        const student = studentMap[sub.student_id?.toString()];
+        const problem = problemMap[sub.problem_id?.toString()];
+        return {
+          id: sub._id.toString(),
+          student_name: student?.name || 'Unknown',
+          student_email: student?.email || '',
+          problem_title: problem?.title || 'Unknown',
+          problem_difficulty: problem?.difficulty || '',
+          language: sub.language,
+          status: sub.status,
+          passed_test_cases: sub.passed_test_cases,
+          total_test_cases: sub.total_test_cases,
+          submitted_at: sub.submitted_at,
+        };
+      }),
     });
   }),
 );

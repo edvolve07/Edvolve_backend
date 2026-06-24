@@ -756,6 +756,8 @@ async function seedProblems() {
       const description = generateDescription(problemText, titleLine, topicContext);
       const sampleTestCases = genSamples(problemText, titleLine);
 
+      const curriculum_order = parseInt(fileKey.split('-')[0], 10) || 99;
+
       problems.push({
         title: titleLine,
         description,
@@ -764,6 +766,7 @@ async function seedProblems() {
         output_format: outputFormat,
         difficulty,
         concept,
+        curriculum_order,
         sample_test_cases: sampleTestCases,
         hidden_test_cases: [{ input: '1', output: '1' }],
         time_limit: 2,

@@ -1,10 +1,7 @@
 import express from 'express';
 import { requireAuth, requireModuleAccess, requireRole } from '../../aptitude/middleware/auth.js';
 import { ROLES } from '../../aptitude/utils/roles.js';
-import { ProgrammingAssessment } from '../models/ProgrammingAssessment.js';
-import { ProgrammingAssessmentProblem } from '../models/ProgrammingAssessmentProblem.js';
-import { ProgrammingAssessmentAttempt } from '../models/ProgrammingAssessmentAttempt.js';
-import { ProgrammingAssessmentAnswer } from '../models/ProgrammingAssessmentAnswer.js';
+import { ProgrammingAssessment, ProgrammingAssessmentProblem, ProgrammingAssessmentAttempt, ProgrammingAssessmentAnswer, User, Op } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, notFound } from '../utils/httpError.js';
 import { DEFAULT_PRACTICE_LANGUAGES, LANGUAGE_IDS, LANGUAGES } from '../utils/constants.js';
@@ -26,17 +23,18 @@ function normalizeLanguages(languages) {
 router.get(
   '/assessments',
   asyncHandler(async (req, res) => {
-    const assessments = await ProgrammingAssessment.find({
-      created_by: req.user._id,
-      is_deleted: { $ne: true },
-    })
-      .sort({ created_at: -1 })
-      .lean();
+    const assessments = await ProgrammingAssessment.findAll({
+      where: {
+        created_by: req.user._id,
+        is_deleted: { [Op.ne]: true },
+      },
+      order: [['created_at', 'DESC']],
+    });
 
     const result = await Promise.all(
       assessments.map(async (a) => {
-        const problemCount = await ProgrammingAssessmentProblem.countDocuments({ assessment_id: a._id });
-        const attemptCount = await ProgrammingAssessmentAttempt.countDocuments({ assessment_id: a._id });
+        const problemCount = await ProgrammingAssessmentProblem.count({ where: { assessment_id: a._id } });
+        const attemptCount = await ProgrammingAssessmentAttempt.count({ where: { assessment_id: a._id } });
         return {
           id: a._id.toString(),
           title: a.title,
@@ -81,12 +79,13 @@ router.post(
 router.get(
   '/assessments/:id',
   asyncHandler(async (req, res) => {
-    const assessment = await ProgrammingAssessment.findById(req.params.id);
+    const assessment = await ProgrammingAssessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
-    const problems = await ProgrammingAssessmentProblem.find({ assessment_id: assessment._id })
-      .sort({ order: 1 })
-      .lean();
+    const problems = await ProgrammingAssessmentProblem.findAll({
+      where: { assessment_id: assessment._id },
+      order: [['order', 'ASC']],
+    });
 
     res.json({
       assessment: {
@@ -122,7 +121,7 @@ router.patch(
   '/assessments/:id',
   asyncHandler(async (req, res) => {
     const { title, description, status } = req.body;
-    const assessment = await ProgrammingAssessment.findById(req.params.id);
+    const assessment = await ProgrammingAssessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
     if (title !== undefined) assessment.title = title.trim();
@@ -147,10 +146,10 @@ router.patch(
     const { status } = req.body;
     if (!['draft', 'published'].includes(status)) throw badRequest('Invalid status');
 
-    const assessment = await ProgrammingAssessment.findById(req.params.id);
+    const assessment = await ProgrammingAssessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
-    const problemCount = await ProgrammingAssessmentProblem.countDocuments({ assessment_id: assessment._id });
+    const problemCount = await ProgrammingAssessmentProblem.count({ where: { assessment_id: assessment._id } });
     if (status === 'published' && problemCount === 0) {
       throw badRequest('Cannot publish an assessment with no problems');
     }
@@ -171,7 +170,7 @@ router.patch(
 router.delete(
   '/assessments/:id',
   asyncHandler(async (req, res) => {
-    const assessment = await ProgrammingAssessment.findById(req.params.id);
+    const assessment = await ProgrammingAssessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
     assessment.is_deleted = true;
@@ -188,12 +187,12 @@ router.put(
     const { problems } = req.body;
     if (!Array.isArray(problems)) throw badRequest('Problems must be an array');
 
-    const assessment = await ProgrammingAssessment.findById(req.params.id);
+    const assessment = await ProgrammingAssessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
-    await ProgrammingAssessmentProblem.deleteMany({ assessment_id: assessment._id });
+    await ProgrammingAssessmentProblem.destroy({ where: { assessment_id: assessment._id } });
 
-    const created = await ProgrammingAssessmentProblem.insertMany(
+    const created = await ProgrammingAssessmentProblem.bulkCreate(
       problems.map((p, i) => ({
         assessment_id: assessment._id,
         title: p.title,
@@ -228,36 +227,48 @@ router.put(
 router.get(
   '/assessments/:id/results',
   asyncHandler(async (req, res) => {
-    const assessment = await ProgrammingAssessment.findById(req.params.id);
+    const assessment = await ProgrammingAssessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
-    const attempts = await ProgrammingAssessmentAttempt.find({ assessment_id: assessment._id })
-      .populate('student_id', 'name email')
-      .sort({ submitted_at: -1 })
-      .lean();
+    const attempts = await ProgrammingAssessmentAttempt.findAll({
+      where: { assessment_id: assessment._id },
+      order: [['submitted_at', 'DESC']],
+    });
 
-    const userIds = attempts.map((a) => a.student_id?._id).filter(Boolean);
-    const scopedUserIds = [...new Set(userIds)];
+    const userIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
+    const users = userIds.length > 0
+      ? await User.findAll({
+          where: { _id: { [Op.in]: userIds } },
+          attributes: ['_id', 'name', 'email'],
+        })
+      : [];
+    const userMap = {};
+    for (const u of users) {
+      userMap[u._id] = u;
+    }
 
     res.json({
       assessment: {
         id: assessment._id.toString(),
         title: assessment.title,
       },
-      results: attempts.map((a) => ({
-        id: a._id.toString(),
-        student_id: a.student_id?._id?.toString() || '',
-        student_name: a.student_id?.name || 'Unknown',
-        student_email: a.student_id?.email || '',
-        status: a.status,
-        total_marks: a.total_marks,
-        obtained_marks: a.obtained_marks,
-        percentage: a.total_marks > 0
-          ? Math.round((a.obtained_marks / a.total_marks) * 100)
-          : 0,
-        started_at: a.started_at,
-        submitted_at: a.submitted_at,
-      })),
+      results: attempts.map((a) => {
+        const user = userMap[a.student_id];
+        return {
+          id: a._id.toString(),
+          student_id: a.student_id?.toString() || '',
+          student_name: user?.name || 'Unknown',
+          student_email: user?.email || '',
+          status: a.status,
+          total_marks: a.total_marks,
+          obtained_marks: a.obtained_marks,
+          percentage: a.total_marks > 0
+            ? Math.round((a.obtained_marks / a.total_marks) * 100)
+            : 0,
+          started_at: a.started_at,
+          submitted_at: a.submitted_at,
+        };
+      }),
     });
   }),
 );
@@ -265,29 +276,44 @@ router.get(
 router.get(
   '/analytics',
   asyncHandler(async (req, res) => {
-    const assessments = await ProgrammingAssessment.find({
-      created_by: req.user._id,
-      is_deleted: { $ne: true },
-    }).lean();
+    const assessments = await ProgrammingAssessment.findAll({
+      where: {
+        created_by: req.user._id,
+        is_deleted: { [Op.ne]: true },
+      },
+    });
 
     const assessmentIds = assessments.map((a) => a._id);
-    const attempts = await ProgrammingAssessmentAttempt.find({
-      assessment_id: { $in: assessmentIds },
-      status: 'submitted',
-    })
-      .populate('student_id', 'name email')
-      .sort({ submitted_at: -1 })
-      .lean();
+    const attempts = await ProgrammingAssessmentAttempt.findAll({
+      where: {
+        assessment_id: { [Op.in]: assessmentIds },
+        status: 'submitted',
+      },
+      order: [['submitted_at', 'DESC']],
+    });
+
+    const studentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
+    const users = studentIds.length > 0
+      ? await User.findAll({
+          where: { _id: { [Op.in]: studentIds } },
+          attributes: ['_id', 'name', 'email'],
+        })
+      : [];
+    const userMap = {};
+    for (const u of users) {
+      userMap[u._id] = u;
+    }
 
     const studentMap = {};
     for (const a of attempts) {
-      const sid = a.student_id?._id?.toString();
+      const sid = a.student_id?.toString();
       if (!sid) continue;
+      const user = userMap[sid];
       if (!studentMap[sid]) {
         studentMap[sid] = {
           student_id: sid,
-          student_name: a.student_id?.name || 'Unknown',
-          student_email: a.student_id?.email || '',
+          student_name: user?.name || 'Unknown',
+          student_email: user?.email || '',
           total_assessments: 0,
           total_marks: 0,
           obtained_marks: 0,

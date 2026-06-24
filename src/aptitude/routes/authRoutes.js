@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { requireAuth } from '../middleware/auth.js';
-import { User } from '../models/User.js';
+import { User, Op } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError, badRequest, locked, unauthorized } from '../utils/httpError.js';
 import { normalizeEmail, roleForEmail, ROLES } from '../utils/roles.js';
@@ -13,12 +13,40 @@ import {
   getPasswordResetBaseUrl,
   isEmailServiceConfigured,
   sendPasswordResetEmail,
+  sendEmailVerificationEmail,
 } from '../../services/emailService.js';
 
 const router = express.Router();
 
+function toSafeJSON(user) {
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone || '',
+    organization: user.organization || '',
+    interested_role: user.interested_role || '',
+    profile_headline: user.profile_headline || '',
+    profile_bio: user.profile_bio || '',
+    location: user.location || '',
+    modules_access: user.modules_access || ['both'],
+    usn: user.usn || '',
+    department_id: user.department_id || null,
+    year: user.year || '',
+    admin_role: user.admin_role || '',
+    institutionId: user.institutionId || null,
+    assigned_admin: user.assigned_admin || null,
+    must_change_password: user.must_change_password !== false,
+    role: user.role,
+    is_active: user.is_active !== false,
+    email_verified: user.email_verified !== false,
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+  };
+}
+
 function signToken(user) {
-  return jwt.sign({ sub: user._id.toString(), role: user.role }, getJwtSecret(), {
+  return jwt.sign({ sub: user._id, role: user.role }, getJwtSecret(), {
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
   });
 }
@@ -29,7 +57,6 @@ function getJwtSecret() {
       'Set JWT_SECRET in the backend environment',
     ]);
   }
-
   return process.env.JWT_SECRET;
 }
 
@@ -72,18 +99,43 @@ router.post(
     getJwtSecret();
 
     const normalizedEmail = normalizeEmail(email);
-    const existing = await User.findOne({ email: normalizedEmail });
+
+    const existing = await User.findOne({ where: { email: normalizedEmail } });
     if (existing) throw badRequest('Email is already registered');
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const passwordHash = await bcrypt.hash(password, 10);
     const user = await User.create({
       name: name.trim(),
       email: normalizedEmail,
       password_hash: passwordHash,
-      role: roleForEmail(normalizedEmail),
+      role: ROLES.MASTER_ADMIN,
+      email_verification_token: crypto.createHash('sha256').update(verificationToken).digest('hex'),
+      email_verification_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      email_verified: !isEmailServiceConfigured(),
     });
 
-    res.status(201).json({ user: user.toSafeJSON(), token: signToken(user) });
+    if (isEmailServiceConfigured()) {
+      try {
+        const baseUrl = getPasswordResetBaseUrl(req);
+        const verifyUrl = new URL('/verify-email', baseUrl);
+        verifyUrl.searchParams.set('token', verificationToken);
+        verifyUrl.searchParams.set('email', normalizedEmail);
+        await sendEmailVerificationEmail({
+          to: normalizedEmail,
+          name: name.trim(),
+          verifyLink: verifyUrl.toString(),
+        });
+      } catch (emailError) {
+        console.error('[signup] Verification email failed:', emailError.message);
+      }
+    }
+
+    res.status(201).json({
+      user: toSafeJSON(user),
+      token: signToken(user),
+      message: 'Account created. Please verify your email to access all features.',
+    });
   }),
 );
 
@@ -95,9 +147,7 @@ router.post(
     getJwtSecret();
 
     const normalizedEmail = normalizeEmail(email);
-    const user = await User.findOne({ email: normalizedEmail }).select(
-      '+password_hash +password_salt',
-    );
+    const user = await User.findOne({ where: { email: normalizedEmail } });
     if (!user) throw unauthorized('Invalid email or password');
 
     const isBcryptHash = String(user.password_hash || '').startsWith('$2');
@@ -108,22 +158,27 @@ router.post(
         : false;
     if (!valid) throw unauthorized('Invalid email or password');
     if (user.is_active === false) throw locked();
+    if (user.email_verified === false) {
+      throw badRequest('Email not verified. Please check your inbox for the verification link.', [
+        'Contact support if you did not receive a verification email.',
+      ]);
+    }
 
     const configuredRole = roleForEmail(normalizedEmail);
     if (!isBcryptHash) {
-      user.password_hash = await bcrypt.hash(password, 12);
-      user.password_salt = undefined;
+      user.password_hash = await bcrypt.hash(password, 10);
+      user.password_salt = null;
     }
 
     if (configuredRole !== ROLES.STUDENT && user.role !== configuredRole) {
       user.role = configuredRole;
     }
 
-    if (!isBcryptHash || user.isModified('role')) {
+    if (!isBcryptHash || user.changed('role')) {
       await user.save();
     }
 
-    res.json({ user: user.toSafeJSON(), token: signToken(user) });
+    res.json({ user: toSafeJSON(user), token: signToken(user) });
   }),
 );
 
@@ -138,7 +193,7 @@ router.post(
       ]);
     }
 
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       res.json(passwordResetResponse());
       return;
@@ -159,8 +214,8 @@ router.post(
         resetLink: resetUrl.toString(),
       });
     } catch (error) {
-      user.password_reset_token_hash = undefined;
-      user.password_reset_expires_at = undefined;
+      user.password_reset_token_hash = null;
+      user.password_reset_expires_at = null;
       await user.save();
       throw new HttpError(503, 'Password reset email could not be sent', [
         error.message || 'Email delivery failed',
@@ -185,9 +240,11 @@ router.post(
     if (errors.length) throw badRequest('Validation failed', errors);
 
     const user = await User.findOne({
-      password_reset_token_hash: hashResetToken(token),
-      password_reset_expires_at: { $gt: new Date() },
-    }).select('+password_hash +password_salt +password_reset_token_hash');
+      where: {
+        password_reset_token_hash: hashResetToken(token),
+        password_reset_expires_at: { [Op.gt]: new Date() },
+      },
+    });
 
     if (!user) {
       throw badRequest('Reset link is invalid or expired', [
@@ -195,10 +252,10 @@ router.post(
       ]);
     }
 
-    user.password_hash = await bcrypt.hash(password, 12);
-    user.password_salt = undefined;
-    user.password_reset_token_hash = undefined;
-    user.password_reset_expires_at = undefined;
+    user.password_hash = await bcrypt.hash(password, 10);
+    user.password_salt = null;
+    user.password_reset_token_hash = null;
+    user.password_reset_expires_at = null;
     await user.save();
 
     res.json({ message: 'Password has been reset. You can now sign in.' });
@@ -209,7 +266,7 @@ router.get(
   '/me',
   requireAuth,
   asyncHandler(async (req, res) => {
-    res.json({ user: req.user.toSafeJSON() });
+    res.json({ user: toSafeJSON(req.user) });
   }),
 );
 
@@ -232,15 +289,17 @@ router.put(
 
     if (phone) {
       const existingByPhone = await User.findOne({
-        phone,
-        _id: { $ne: req.user._id },
+        where: {
+          phone,
+          _id: { [Op.ne]: req.user._id },
+        },
       });
       if (existingByPhone) {
         throw badRequest('Phone number is already registered', ['Phone number is already registered']);
       }
     }
 
-    const user = await User.findById(req.user._id);
+    const user = await User.findByPk(req.user._id);
     if (!user) throw unauthorized('User not found');
 
     user.name = name;
@@ -254,8 +313,33 @@ router.put(
 
     res.json({
       message: 'Profile updated successfully.',
-      user: user.toSafeJSON(),
+      user: toSafeJSON(user),
     });
+  }),
+);
+
+router.post(
+  '/verify-email',
+  asyncHandler(async (req, res) => {
+    const token = String(req.body.token || '').trim();
+    const email = normalizeEmail(req.body.email);
+    if (!token || !email) throw badRequest('Verification token and email are required');
+
+    const user = await User.findOne({
+      where: {
+        email,
+        email_verification_token: hashResetToken(token),
+        email_verification_expires_at: { [Op.gt]: new Date() },
+      },
+    });
+    if (!user) throw badRequest('Verification link is invalid or expired');
+
+    user.email_verified = true;
+    user.email_verification_token = null;
+    user.email_verification_expires_at = null;
+    await user.save();
+
+    res.json({ message: 'Email verified successfully.' });
   }),
 );
 
@@ -271,7 +355,7 @@ router.post(
     if (newPassword !== confirmPassword) errors.push('Passwords do not match');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const user = await User.findById(req.user._id).select('+password_hash +password_salt');
+    const user = await User.findByPk(req.user._id);
     if (!user) throw unauthorized('User not found');
 
     const isBcryptHash = String(user.password_hash || '').startsWith('$2');
@@ -283,8 +367,8 @@ router.post(
 
     if (!valid) throw badRequest('Current password is incorrect');
 
-    user.password_hash = await bcrypt.hash(newPassword, 12);
-    user.password_salt = undefined;
+    user.password_hash = await bcrypt.hash(newPassword, 10);
+    user.password_salt = null;
     user.must_change_password = false;
     await user.save();
 
@@ -292,7 +376,7 @@ router.post(
 
     res.json({
       message: 'Password has been changed successfully.',
-      user: user.toSafeJSON(),
+      user: toSafeJSON(user),
       token,
     });
   }),

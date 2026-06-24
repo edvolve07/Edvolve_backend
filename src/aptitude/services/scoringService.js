@@ -1,38 +1,27 @@
-import { StudentAnswer } from '../models/StudentAnswer.js';
+import { StudentAnswer, AssessmentAttempt, Question, Op } from '../../database/index.js';
 
 export async function evaluateAttempt(attempt, assessment, questions) {
-  const savedAnswers = await StudentAnswer.find({ attempt_id: attempt._id });
+  const savedAnswers = await StudentAnswer.findAll({ where: { attempt_id: attempt._id } });
   const answerMap = new Map(
-    savedAnswers.map((answer) => [answer.question_id.toString(), answer]),
+    savedAnswers.map((answer) => [answer.question_id, answer]),
   );
 
   let score = 0;
-  const updates = [];
 
   for (const question of questions) {
-    const existing = answerMap.get(question._id.toString());
+    const existing = answerMap.get(question._id);
     const selected = existing?.selected_option || null;
     const isCorrect = selected === question.correct_option;
     const marksAwarded = !selected ? 0 : isCorrect ? question.marks : -question.negative_marks;
     score += marksAwarded;
 
-    updates.push({
-      updateOne: {
-        filter: { attempt_id: attempt._id, question_id: question._id },
-        update: {
-          $set: {
-            selected_option: selected,
-            is_correct: isCorrect,
-            marks_awarded: marksAwarded,
-          },
-        },
-        upsert: true,
-      },
+    const [answer] = await StudentAnswer.findOrCreate({
+      where: { attempt_id: attempt._id, question_id: question._id },
+      defaults: { selected_option: selected, is_correct: isCorrect, marks_awarded: marksAwarded },
     });
-  }
-
-  if (updates.length) {
-    await StudentAnswer.bulkWrite(updates);
+    if (!answer.isNewRecord) {
+      await answer.update({ selected_option: selected, is_correct: isCorrect, marks_awarded: marksAwarded });
+    }
   }
 
   const totalMarks = assessment.total_marks || questions.reduce((sum, q) => sum + q.marks, 0);

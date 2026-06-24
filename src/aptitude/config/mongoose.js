@@ -1,6 +1,4 @@
-import { createRequire } from 'node:module';
-
-const requireFromRoot = createRequire(new URL('../../../package.json', import.meta.url));
-
-export const mongoose = requireFromRoot('mongoose');
-export default mongoose;
+// Mongoose bridge replaced by Sequelize.
+// This file exists only for compatibility during migration.
+// All models now use Sequelize via src/database/models/.
+export default null;

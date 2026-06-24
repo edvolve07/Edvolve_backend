@@ -3,14 +3,7 @@ import multer from 'multer';
 import PDFDocument from 'pdfkit';
 import XLSX from 'xlsx';
 import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
-import { Assessment } from '../models/Assessment.js';
-import { AssessmentAttempt } from '../models/AssessmentAttempt.js';
-import { ProctoringEvent } from '../models/ProctoringEvent.js';
-import { Question } from '../models/Question.js';
-import { StudentAnswer } from '../models/StudentAnswer.js';
-import { StudentCertificate } from '../models/StudentCertificate.js';
-import { User } from '../models/User.js';
-import { collections } from '../../db.js';
+import { User, Assessment, AssessmentAttempt, ProctoringEvent, Question, StudentAnswer, StudentCertificate, InterviewReport, ResumeVersion, ProgrammingSubmission, ProgrammingProblem, Department, Op } from '../../database/index.js';
 import { extractFileText } from '../services/fileTextService.js';
 import { generateAssessmentJson } from '../services/aiService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -18,6 +11,7 @@ import { CONCEPTS, DIFFICULTIES, STATUSES } from '../utils/constants.js';
 import { badRequest, notFound } from '../utils/httpError.js';
 import { toReviewQuestion, validateQuestions } from '../utils/questionValidation.js';
 import { ROLES } from '../utils/roles.js';
+import { validateFileType } from '../../utils/fileValidation.js';
 import {
   isEmailServiceConfigured,
   sendAssessmentPublishedEmail,
@@ -150,7 +144,7 @@ function sendReportPdf(res, filename, title, rows) {
 }
 
 async function serializeAssessment(assessment) {
-  const totalQuestions = await Question.countDocuments({ assessment_id: assessment._id });
+  const totalQuestions = await Question.count({ where: { assessment_id: assessment._id } });
   return {
     id: assessment._id.toString(),
     title: assessment.title,
@@ -182,11 +176,14 @@ async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
     };
   }
 
-  const students = await User.find({
-    role: ROLES.STUDENT,
-    assigned_admin: admin._id,
-    is_active: { $ne: false },
-  }).select('name email');
+  const students = await User.findAll({
+    where: {
+      role: ROLES.STUDENT,
+      assigned_admin: admin._id,
+      is_active: { [Op.ne]: false },
+    },
+    attributes: ['name', 'email'],
+  });
 
   const recipients = students.filter((student) => student.email);
   const summary = {
@@ -219,6 +216,82 @@ async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
   return summary;
 }
 
+async function populateAttempts(attempts) {
+  if (!attempts.length) return attempts;
+  const studentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
+  const assessmentIds = [...new Set(attempts.map((a) => a.assessment_id).filter(Boolean))];
+  const [students, assessments] = await Promise.all([
+    User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+    Assessment.findAll({
+      where: { _id: { [Op.in]: assessmentIds } },
+      attributes: ['_id', 'title', 'concept', 'difficulty', 'total_marks', 'passing_marks', 'duration_minutes'],
+    }),
+  ]);
+  const studentMap = Object.fromEntries(students.map((s) => [s._id, s]));
+  const assessmentMap = Object.fromEntries(assessments.map((a) => [a._id, a]));
+  for (const attempt of attempts) {
+    attempt.student_id = studentMap[attempt.student_id] || attempt.student_id;
+    attempt.assessment_id = assessmentMap[attempt.assessment_id] || attempt.assessment_id;
+  }
+  return attempts;
+}
+
+const YEAR_LABELS = ['1st', '2nd', '3rd', '4th'];
+
+async function getStudentProfile(studentId) {
+  return User.findOne({
+    where: { _id: studentId, role: 'student' },
+    attributes: ['_id', 'name', 'email', 'phone', 'usn', 'department_id', 'year', 'modules_access', 'institutionId', 'assigned_admin', 'is_active', 'created_at'],
+  });
+}
+
+async function getStudentAptitudeStats(studentId) {
+  const attempts = await AssessmentAttempt.findAll({
+    where: { student_id: studentId, status: 'submitted' },
+    order: [['submitted_at', 'DESC']],
+  });
+  await populateAttempts(attempts);
+  const total = attempts.length;
+  if (!total) return { total_attempts: 0, passed: 0, average_percentage: 0, attempts: [] };
+  const passed = attempts.filter((a) => {
+    const assessment = a.assessment_id;
+    return a.score >= (assessment?.passing_marks || 0);
+  }).length;
+  const avgPct = Number((attempts.reduce((s, a) => s + a.percentage, 0) / total).toFixed(2));
+  return { total_attempts: total, passed, average_percentage: avgPct, attempts };
+}
+
+async function getStudentProgrammingStats(studentId) {
+  const [totalSubmissions, accepted, solvedSubmissions, recent] = await Promise.all([
+    ProgrammingSubmission.count({ where: { student_id: studentId } }),
+    ProgrammingSubmission.count({ where: { student_id: studentId, status: 'accepted' } }),
+    ProgrammingSubmission.findAll({ where: { student_id: studentId, status: 'accepted' }, attributes: ['problem_id'] }),
+    ProgrammingSubmission.findAll({ where: { student_id: studentId }, order: [['submitted_at', 'DESC']], limit: 10 }),
+  ]);
+  const solvedUnique = [...new Set(solvedSubmissions.map((s) => s.problem_id))].length;
+  const problemIds = [...new Set(recent.map((s) => s.problem_id).filter(Boolean))];
+  if (problemIds.length) {
+    const problems = await ProgrammingProblem.findAll({
+      where: { _id: problemIds }, attributes: ['_id', 'title', 'concept', 'difficulty'],
+    });
+    const problemMap = Object.fromEntries(problems.map((p) => [p._id, p]));
+    recent.forEach((s) => { if (problemMap[s.problem_id]) s.setDataValue('problem_id', problemMap[s.problem_id]); });
+  }
+  return { total_submissions: totalSubmissions, accepted, solved_unique: solvedUnique, recent_submissions: recent };
+}
+
+async function getStudentInterviewStats(studentId) {
+  const reports = await InterviewReport.findAll({
+    where: { student_id: studentId },
+    attributes: ['session_id', 'report_id', 'generated_date', 'interview_domain', 'interview_role', 'overall', 'ats_analysis'],
+    order: [['generated_date', 'DESC']],
+    limit: 10,
+  });
+  const pcts = reports.map((r) => Number(r.overall?.percentage || 0)).filter(Number.isFinite);
+  const avg = pcts.length ? Number((pcts.reduce((s, v) => s + v, 0) / pcts.length).toFixed(2)) : 0;
+  return { total_reports: reports.length, average_percentage: avg, reports };
+}
+
 router.get(
   '/dashboard',
   asyncHandler(async (req, res) => {
@@ -227,24 +300,39 @@ router.get(
     const hasAptitude = userModules.includes('aptitude') || userModules.includes('both');
     const hasInterview = userModules.includes('ai_interview') || userModules.includes('both');
 
-    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const isDepartmentAdmin = req.user.admin_role === 'hod' && req.user.department_id;
+
+    const studentWhere = { role: 'student' };
+    if (isDepartmentAdmin) {
+      studentWhere.department_id = req.user.department_id;
+    } else if (req.user.institutionId) {
+      studentWhere.institutionId = req.user.institutionId;
+    } else {
+      studentWhere.assigned_admin = req.user._id;
+    }
+
+    const assignedStudents = await User.findAll({
+      where: studentWhere,
+      attributes: ['_id', 'name', 'email', 'usn', 'department_id', 'year', 'modules_access', 'is_active'],
+    });
     const assignedStudentIds = assignedStudents.map((s) => s._id);
 
     let assessments = 0, published = 0, students = 0, submittedCount = 0, inProgressCount = 0;
     let submissions = [], interviewReports = [];
 
     if (hasAptitude) {
-      const studentFilter = assignedStudentIds.length ? { student_id: { $in: assignedStudentIds } } : { student_id: null };
+      const assessmentFilter = { is_deleted: { [Op.ne]: true } };
+      if (req.user.institutionId) assessmentFilter.institutionId = req.user.institutionId;
+      const attemptFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
       const aptitudeResults = await Promise.all([
-        Assessment.countDocuments({ is_deleted: { $ne: true } }),
-        Assessment.countDocuments({ status: 'published', is_deleted: { $ne: true } }),
-        AssessmentAttempt.countDocuments({ ...studentFilter, status: 'submitted' }),
-        AssessmentAttempt.countDocuments({ ...studentFilter, status: 'in_progress' }),
-        AssessmentAttempt.find({ ...studentFilter, status: 'submitted' })
-          .populate('student_id', 'name email')
-          .populate('assessment_id', 'title concept difficulty total_marks passing_marks duration_minutes')
-          .sort({ submitted_at: -1 })
-          .limit(limit),
+        Assessment.count({ where: assessmentFilter }),
+        Assessment.count({ where: { ...assessmentFilter, status: 'published' } }),
+        AssessmentAttempt.count({ where: { ...attemptFilter, status: 'submitted' } }),
+        AssessmentAttempt.count({ where: { ...attemptFilter, status: 'in_progress' } }),
+        AssessmentAttempt.findAll({
+          where: { ...attemptFilter, status: 'submitted' },
+          order: [['submitted_at', 'DESC']], limit,
+        }),
       ]);
       assessments = aptitudeResults[0];
       published = aptitudeResults[1];
@@ -256,42 +344,73 @@ router.get(
     students = assignedStudentIds.length;
 
     if (hasInterview) {
-      const { reports } = collections();
       const assignedStudentIdStrings = assignedStudents.map((s) => s._id.toString());
-      const reportFilter = assignedStudentIdStrings.length ? { student_id: { $in: assignedStudentIdStrings } } : { student_id: null };
-      interviewReports = await reports.find(reportFilter, {
-        projection: {
-          _id: 0,
-          session_id: 1,
-          report_id: 1,
-          generated_date: 1,
-          student_name: 1,
-          student_email: 1,
-          interview_domain: 1,
-          interview_role: 1,
-          overall: 1,
-          ats_analysis: 1,
-        }
-      }).sort({ generated_date: -1 }).limit(limit).toArray();
+      const reportFilter = assignedStudentIdStrings.length ? { student_id: { [Op.in]: assignedStudentIdStrings } } : { student_id: null };
+      interviewReports = await InterviewReport.findAll({
+        where: reportFilter,
+        attributes: ['session_id', 'report_id', 'generated_date', 'student_name', 'student_email', 'interview_domain', 'interview_role', 'overall', 'ats_analysis'],
+        order: [['generated_date', 'DESC']], limit,
+      });
     }
 
+    await populateAttempts(submissions);
     const analytics = submissions.map(serializeAttemptAnalytics);
-
     const passedCount = analytics.filter((item) => item.passed).length;
     const averagePercentage = analytics.length
       ? Number((analytics.reduce((sum, item) => sum + item.percentage, 0) / analytics.length).toFixed(2))
       : 0;
     const interviewPercentages = interviewReports
-      .map((report) => Number(report.overall?.percentage || 0))
-      .filter((value) => Number.isFinite(value));
+      .map((report) => Number(report.overall?.percentage || 0)).filter((v) => Number.isFinite(v));
     const averageInterviewPercentage = interviewPercentages.length
-      ? Number((interviewPercentages.reduce((sum, value) => sum + value, 0) / interviewPercentages.length).toFixed(2))
+      ? Number((interviewPercentages.reduce((s, v) => s + v, 0) / interviewPercentages.length).toFixed(2))
       : 0;
 
+    let departmentName = null;
+    if (isDepartmentAdmin) {
+      const dept = await Department.findByPk(req.user.department_id, { attributes: ['name'] });
+      departmentName = dept?.name || null;
+    }
+
+    const attemptMap = {};
+    for (const a of submissions) {
+      const sid = a.student_id?._id?.toString() || a.student_id?.toString();
+      if (!attemptMap[sid]) attemptMap[sid] = [];
+      attemptMap[sid].push(a);
+    }
+
+    const studentsWithStats = assignedStudents.map((s) => {
+      const sid = s._id.toString();
+      const studentAttempts = attemptMap[sid] || [];
+      const passed = studentAttempts.filter((a) => a.score >= ((a.assessment_id?.passing_marks) || 0)).length;
+      const avgPct = studentAttempts.length
+        ? Number((studentAttempts.reduce((sum, a) => sum + a.percentage, 0) / studentAttempts.length).toFixed(2))
+        : 0;
+      return {
+        id: s._id,
+        name: s.name,
+        email: s.email,
+        usn: s.usn || '',
+        year: s.year || '',
+        modules_access: s.modules_access || ['both'],
+        is_active: s.is_active !== false,
+        submitted_attempts: studentAttempts.length,
+        passed_attempts: passed,
+        average_percentage: avgPct,
+      };
+    });
+
+    const yearGroups = {};
+    for (const label of YEAR_LABELS) {
+      yearGroups[label] = studentsWithStats.filter((s) => s.year === label);
+    }
+
     res.json({
+      department_name: departmentName,
+      admin_role: req.user.admin_role || '',
+      students,
+      year_groups: yearGroups,
       assessments,
       published,
-      students,
       submitted_attempts: submittedCount,
       in_progress_attempts: inProgressCount,
       pass_rate: analytics.length ? Math.round((passedCount / analytics.length) * 100) : 0,
@@ -319,11 +438,113 @@ router.get(
 );
 
 router.get(
+  '/students/:studentId/analytics',
+  asyncHandler(async (req, res) => {
+    const { studentId } = req.params;
+
+    const student = await getStudentProfile(studentId);
+    if (!student) throw notFound('Student not found');
+
+    const isDepartmentAdmin = req.user.admin_role === 'hod' && req.user.department_id;
+    if (isDepartmentAdmin && student.department_id !== req.user.department_id) {
+      throw notFound('Student not found');
+    }
+
+    const [aptitudeStats, programmingStats, interviewStats, resumeVersion] = await Promise.all([
+      getStudentAptitudeStats(studentId),
+      getStudentProgrammingStats(studentId),
+      getStudentInterviewStats(studentId),
+      ResumeVersion.findOne({ where: { student_id: studentId }, order: [['version', 'DESC']] }),
+    ]);
+
+    res.json({
+      profile: {
+        id: student._id,
+        name: student.name,
+        email: student.email,
+        phone: student.phone || '',
+        usn: student.usn || '',
+        year: student.year || '',
+        modules_access: student.modules_access || ['both'],
+        is_active: student.is_active !== false,
+        created_at: student.created_at,
+      },
+      aptitude: {
+        total_attempts: aptitudeStats.total_attempts,
+        passed: aptitudeStats.passed,
+        average_percentage: aptitudeStats.average_percentage,
+        attempts: aptitudeStats.attempts.map((a) => {
+          const asm = a.assessment_id;
+          return {
+            id: a._id,
+            assessment_id: asm?._id || a.assessment_id,
+            assessment_title: asm?.title || '',
+            concept: asm?.concept || '',
+            difficulty: asm?.difficulty || '',
+            score: a.score,
+            percentage: a.percentage,
+            passing_marks: asm?.passing_marks || 0,
+            status: a.status,
+            started_at: a.started_at,
+            submitted_at: a.submitted_at,
+          };
+        }),
+      },
+      programming: {
+        total_submissions: programmingStats.total_submissions,
+        accepted: programmingStats.accepted,
+        solved_unique: programmingStats.solved_unique,
+        acceptance_rate: programmingStats.total_submissions
+          ? Math.round((programmingStats.accepted / programmingStats.total_submissions) * 100) : 0,
+        recent_submissions: programmingStats.recent_submissions.map((s) => ({
+          id: s._id,
+          problem_id: s.problem_id?._id || s.problem_id,
+          title: s.problem_id?.title || '',
+          concept: s.problem_id?.concept || '',
+          difficulty: s.problem_id?.difficulty || '',
+          status: s.status,
+          language: s.language,
+          passed_test_cases: s.passed_test_cases || 0,
+          total_test_cases: s.total_test_cases || 0,
+          submitted_at: s.submitted_at,
+        })),
+      },
+      interview: {
+        total_reports: interviewStats.total_reports,
+        average_percentage: interviewStats.average_percentage,
+        reports: interviewStats.reports.map((r) => ({
+          session_id: r.session_id,
+          report_id: r.report_id,
+          domain: r.interview_domain || '',
+          role: r.interview_role || '',
+          generated_date: r.generated_date,
+          percentage: r.overall?.percentage || 0,
+          grade: r.overall?.grade || '',
+          grade_label: r.overall?.grade_label || '',
+          ats_score: r.ats_analysis?.ats_score || 0,
+        })),
+      },
+      resume: resumeVersion ? {
+        id: resumeVersion._id,
+        version: resumeVersion.version,
+        title: resumeVersion.title || '',
+        target_role: resumeVersion.target_role || '',
+        ats_score: resumeVersion.ats_analysis?.ats_score || 0,
+        updated_at: resumeVersion.updated_at,
+      } : null,
+    });
+  }),
+);
+
+router.get(
   '/exports/:type',
   asyncHandler(async (req, res) => {
     const type = String(req.params.type || '');
     const format = String(req.query.format || 'xlsx').toLowerCase();
-    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id name email is_active updated_at');
+    const assignedStudents = await User.findAll({
+      where: { role: 'student', assigned_admin: req.user._id },
+      attributes: ['_id', 'name', 'email', 'is_active', 'updated_at'],
+    });
     const assignedStudentIds = assignedStudents.map((student) => student._id);
     const assignedStudentIdStrings = assignedStudents.map((student) => student._id.toString());
     let rows = [];
@@ -331,10 +552,11 @@ router.get(
 
     if (type === 'student-performance') {
       title = 'Student Performance Report';
-      const attempts = await AssessmentAttempt.find({ student_id: { $in: assignedStudentIds }, status: 'submitted' })
-        .populate('student_id', 'name email')
-        .populate('assessment_id', 'title concept difficulty passing_marks total_marks')
-        .sort({ submitted_at: -1 });
+      const attempts = await AssessmentAttempt.findAll({
+        where: { student_id: { [Op.in]: assignedStudentIds }, status: 'submitted' },
+        order: [['submitted_at', 'DESC']],
+      });
+      await populateAttempts(attempts);
       const grouped = new Map();
       for (const attempt of attempts.map(serializeAttemptAnalytics)) {
         const current = grouped.get(attempt.student_id) || {
@@ -355,10 +577,11 @@ router.get(
       }));
     } else if (type === 'assessment-results') {
       title = 'Assessment Result Report';
-      const attempts = await AssessmentAttempt.find({ student_id: { $in: assignedStudentIds }, status: 'submitted' })
-        .populate('student_id', 'name email')
-        .populate('assessment_id', 'title concept difficulty passing_marks total_marks duration_minutes')
-        .sort({ submitted_at: -1 });
+      const attempts = await AssessmentAttempt.findAll({
+        where: { student_id: { [Op.in]: assignedStudentIds }, status: 'submitted' },
+        order: [['submitted_at', 'DESC']],
+      });
+      await populateAttempts(attempts);
       rows = attempts.map(serializeAttemptAnalytics).map((attempt) => ({
         student_name: attempt.student_name,
         email: attempt.email,
@@ -373,10 +596,12 @@ router.get(
       }));
     } else if (type === 'interview-readiness') {
       title = 'Interview Readiness Report';
-      const interviewReports = await collections().reports.find(
-        assignedStudentIdStrings.length ? { student_id: { $in: assignedStudentIdStrings } } : { student_id: null },
-        { projection: { student_name: 1, student_email: 1, interview_role: 1, interview_domain: 1, overall: 1, ats_analysis: 1, created_at: 1 } },
-      ).sort({ created_at: -1 }).limit(1000).toArray();
+      const interviewReports = await InterviewReport.findAll({
+        where: assignedStudentIdStrings.length ? { student_id: { [Op.in]: assignedStudentIdStrings } } : { student_id: null },
+        attributes: ['student_name', 'student_email', 'interview_role', 'interview_domain', 'overall', 'ats_analysis', 'created_at'],
+        order: [['created_at', 'DESC']],
+        limit: 1000,
+      });
       rows = interviewReports.map((report) => ({
         student_name: report.student_name || '',
         email: report.student_email || '',
@@ -422,17 +647,26 @@ router.get(
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
     const [questions, total] = await Promise.all([
-      Question.find(filter)
-        .populate('assessment_id', 'title')
-        .sort({ created_at: -1 })
-        .skip((pageNum - 1) * limitNum)
-        .limit(limitNum),
-      Question.countDocuments(filter),
+      Question.findAll({
+        where: filter,
+        order: [['created_at', 'DESC']],
+        offset: (pageNum - 1) * limitNum,
+        limit: limitNum,
+      }),
+      Question.count({ where: filter }),
     ]);
+
+    const assessmentIds = [...new Set(questions.map((q) => q.assessment_id).filter(Boolean))];
+    const assessments = await Assessment.findAll({
+      where: { _id: { [Op.in]: assessmentIds } },
+      attributes: ['_id', 'title'],
+    });
+    const assessmentTitleMap = Object.fromEntries(assessments.map((a) => [a._id, a.title]));
+
     res.json({
       questions: questions.map((question) => ({
         id: question._id.toString(),
-        assessment_title: question.assessment_id?.title || '',
+        assessment_title: assessmentTitleMap[question.assessment_id] || '',
         question_text: question.question_text,
         concept: question.concept,
         difficulty: question.difficulty,
@@ -455,27 +689,35 @@ router.get(
   '/question-bank/duplicates',
   requireModuleAccess('aptitude'),
   asyncHandler(async (_req, res) => {
-    const duplicates = await Question.aggregate([
-      {
-        $addFields: {
-          normalized: {
-            $trim: {
-              input: {
-                $regexReplace: {
-                  input: { $toLower: '$question_text' },
-                  regex: '[^a-z0-9]+',
-                  replacement: ' ',
-                },
-              },
-            },
-          },
-        },
+    const questions = await Question.findAll({
+      attributes: ['_id', 'question_text', 'duplicate_fingerprint'],
+      where: {
+        duplicate_fingerprint: { [Op.ne]: '' },
       },
-      { $group: { _id: '$normalized', count: { $sum: 1 }, ids: { $push: '$_id' }, samples: { $push: '$question_text' } } },
-      { $match: { count: { $gt: 1 }, _id: { $ne: '' } } },
-      { $sort: { count: -1 } },
-      { $limit: 50 },
-    ]);
+    });
+
+    const groups = {};
+    for (const q of questions) {
+      const fp = q.duplicate_fingerprint;
+      if (!groups[fp]) {
+        groups[fp] = { count: 0, ids: [], samples: [] };
+      }
+      groups[fp].count += 1;
+      groups[fp].ids.push(q._id);
+      groups[fp].samples.push(q.question_text);
+    }
+
+    const duplicates = Object.entries(groups)
+      .filter(([, g]) => g.count > 1)
+      .map(([fingerprint, g]) => ({
+        _id: fingerprint,
+        count: g.count,
+        ids: g.ids,
+        samples: g.samples,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 50);
+
     res.json({
       duplicates: duplicates.map((item) => ({
         fingerprint: item._id,
@@ -495,17 +737,18 @@ router.patch(
     if (!['draft', 'in_review', 'approved', 'rejected'].includes(reviewStatus)) {
       throw badRequest('Invalid review status');
     }
-    const question = await Question.findByIdAndUpdate(
-      req.params.id,
-      {
-        review_status: reviewStatus,
-        tags: Array.isArray(req.body.tags) ? req.body.tags.map((tag) => String(tag).trim()).filter(Boolean) : undefined,
-        is_private_bank: Boolean(req.body.is_private_bank),
-        institution_id: req.body.is_private_bank ? req.user._id : null,
-      },
-      { new: true },
-    );
+    const question = await Question.findByPk(req.params.id);
     if (!question) throw notFound('Question not found');
+
+    const updateData = { review_status: reviewStatus };
+    if (Array.isArray(req.body.tags)) {
+      updateData.tags = req.body.tags.map((tag) => String(tag).trim()).filter(Boolean);
+    }
+    updateData.is_private_bank = Boolean(req.body.is_private_bank);
+    updateData.institution_id = req.body.is_private_bank ? req.user._id : null;
+
+    await question.update(updateData);
+
     res.json({ question: { id: question._id.toString(), review_status: question.review_status, tags: question.tags || [] } });
   }),
 );
@@ -513,12 +756,24 @@ router.patch(
 router.get(
   '/proctoring/events',
   asyncHandler(async (req, res) => {
-    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudents = await User.findAll({ where: { role: 'student', assigned_admin: req.user._id }, attributes: ['_id'] });
     const studentIds = assignedStudents.map((student) => student._id);
-    const events = await ProctoringEvent.find(studentIds.length ? { student_id: { $in: studentIds } } : { student_id: null })
-      .populate('student_id', 'name email')
-      .sort({ occurred_at: -1 })
-      .limit(200);
+    const events = await ProctoringEvent.findAll({
+      where: studentIds.length ? { student_id: { [Op.in]: studentIds } } : { student_id: null },
+      order: [['occurred_at', 'DESC']],
+      limit: 200,
+    });
+
+    const uniqueStudentIds = [...new Set(events.map((e) => e.student_id).filter(Boolean))];
+    const students = await User.findAll({
+      where: { _id: { [Op.in]: uniqueStudentIds } },
+      attributes: ['_id', 'name', 'email'],
+    });
+    const studentMap = Object.fromEntries(students.map((s) => [s._id, s]));
+    for (const event of events) {
+      event.student_id = studentMap[event.student_id] || event.student_id;
+    }
+
     res.json({
       events: events.map((event) => ({
         id: event._id.toString(),
@@ -537,7 +792,7 @@ router.get(
 router.post(
   '/students/:studentId/certificates/:milestone',
   asyncHandler(async (req, res) => {
-    const student = await User.findOne({ _id: req.params.studentId, role: ROLES.STUDENT, assigned_admin: req.user._id });
+    const student = await User.findOne({ where: { _id: req.params.studentId, role: ROLES.STUDENT, assigned_admin: req.user._id } });
     if (!student) throw notFound('Student not found');
     const milestone = String(req.params.milestone || '');
     const titles = {
@@ -547,19 +802,25 @@ router.post(
       placement_track_complete: 'Full Placement Preparation Track',
     };
     if (!titles[milestone]) throw badRequest('Invalid certificate milestone');
-    const certificate = await StudentCertificate.findOneAndUpdate(
-      { student_id: student._id, milestone },
-      {
-        student_id: student._id,
-        milestone,
-        title: titles[milestone],
-        description: `${student.name} was certified by ${req.user.name || 'the institution'} for ${titles[milestone]}.`,
-        score: parseNumber(req.body.score, 0),
-        issued_by: req.user._id,
-        issued_at: new Date(),
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
+
+    let certificate = await StudentCertificate.findOne({
+      where: { student_id: student._id, milestone },
+    });
+    const certData = {
+      student_id: student._id,
+      milestone,
+      title: titles[milestone],
+      description: `${student.name} was certified by ${req.user.name || 'the institution'} for ${titles[milestone]}.`,
+      score: parseNumber(req.body.score, 0),
+      issued_by: req.user._id,
+      issued_at: new Date(),
+    };
+    if (certificate) {
+      await certificate.update(certData);
+    } else {
+      certificate = await StudentCertificate.create(certData);
+    }
+
     res.status(201).json({ certificate });
   }),
 );
@@ -568,14 +829,16 @@ router.get(
   '/analytics/aptitude',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudents = await User.findAll({ where: { role: 'student', assigned_admin: req.user._id }, attributes: ['_id'] });
     const assignedStudentIds = assignedStudents.map((s) => s._id);
-    const studentFilter = assignedStudentIds.length ? { student_id: { $in: assignedStudentIds } } : { student_id: null };
+    const studentFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
 
-    const attempts = await AssessmentAttempt.find({ ...studentFilter, status: 'submitted' })
-      .populate('student_id', 'name email')
-      .populate('assessment_id', 'title concept difficulty total_marks passing_marks duration_minutes')
-      .sort({ submitted_at: -1 });
+    const attempts = await AssessmentAttempt.findAll({
+      where: { ...studentFilter, status: 'submitted' },
+      order: [['submitted_at', 'DESC']],
+    });
+
+    await populateAttempts(attempts);
 
     const attemptAnalytics = attempts.map(serializeAttemptAnalytics);
     const studentMap = new Map();
@@ -621,27 +884,16 @@ router.get(
   '/analytics/interviews',
   requireModuleAccess('ai_interview'),
   asyncHandler(async (req, res) => {
-    const { reports } = collections();
-    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const assignedStudents = await User.findAll({ where: { role: 'student', assigned_admin: req.user._id }, attributes: ['_id'] });
     const assignedStudentIdStrings = assignedStudents.map((s) => s._id.toString());
-    const reportFilter = assignedStudentIdStrings.length ? { student_id: { $in: assignedStudentIdStrings } } : { student_id: null };
+    const reportFilter = assignedStudentIdStrings.length ? { student_id: { [Op.in]: assignedStudentIdStrings } } : { student_id: null };
 
-    const interviewReports = await reports.find(reportFilter, {
-      projection: {
-        _id: 0,
-        session_id: 1,
-        report_id: 1,
-        generated_date: 1,
-        student_id: 1,
-        student_name: 1,
-        student_email: 1,
-        interview_domain: 1,
-        interview_role: 1,
-        overall: 1,
-        ats_analysis: 1,
-        created_at: 1,
-      }
-    }).sort({ created_at: -1 }).limit(500).toArray();
+    const interviewReports = await InterviewReport.findAll({
+      where: reportFilter,
+      attributes: ['session_id', 'report_id', 'generated_date', 'student_id', 'student_name', 'student_email', 'interview_domain', 'interview_role', 'overall', 'ats_analysis', 'created_at'],
+      order: [['created_at', 'DESC']],
+      limit: 500,
+    });
 
     const mappedReports = interviewReports.map((report) => ({
       session_id: report.session_id,
@@ -678,6 +930,12 @@ router.post(
   upload.single('file'),
   asyncHandler(async (req, res) => {
     const config = parseAssessmentPayload(req.body);
+    if (req.file) {
+      const typeCheck = validateFileType(req.file.buffer, req.file.originalname);
+      if (!typeCheck.valid) {
+        throw badRequest(typeCheck.error);
+      }
+    }
     const fileContext = await extractFileText(req.file);
     const aiJson = await generateAssessmentJson(config, fileContext);
     if (!Array.isArray(aiJson.questions) || aiJson.questions.length === 0) {
@@ -710,12 +968,13 @@ router.post(
       start_time: config.start_time,
       end_time: config.end_time,
       status: config.status,
+      institutionId: req.user.institutionId || undefined,
       created_by: req.user._id,
     });
 
     console.log(`Created assessment ${assessment.start_time} with title "${assessment.title}" and ${validation.questions.length} questions`);
 
-    await Question.insertMany(
+    await Question.bulkCreate(
       validation.questions.map((question) => ({
         ...question,
         assessment_id: assessment._id,
@@ -738,7 +997,11 @@ router.get(
   '/assessments',
   requireModuleAccess('aptitude'),
   asyncHandler(async (_req, res) => {
-    const assessments = await Assessment.find({ is_deleted: { $ne: true } }).sort({ created_at: -1 });
+    const filter = { is_deleted: { [Op.ne]: true } };
+    if (req.user.institutionId) {
+      filter.institutionId = req.user.institutionId;
+    }
+    const assessments = await Assessment.findAll({ where: filter, order: [['created_at', 'DESC']] });
     res.json({ assessments: await Promise.all(assessments.map(serializeAssessment)) });
   }),
 );
@@ -758,6 +1021,7 @@ router.post(
       start_time: config.start_time,
       end_time: config.end_time,
       status: config.status,
+      institutionId: req.user.institutionId || undefined,
       created_by: req.user._id,
     });
     const emailNotification = assessment.status === 'published'
@@ -775,9 +1039,9 @@ router.get(
   '/assessments/:id',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
-    const questions = await Question.find({ assessment_id: assessment._id }).sort({ created_at: 1 });
+    const questions = await Question.findAll({ where: { assessment_id: assessment._id }, order: [['created_at', 'ASC']] });
     res.json({
       assessment: await serializeAssessment(assessment),
       questions: questions.map(toReviewQuestion),
@@ -789,7 +1053,7 @@ router.patch(
   '/assessments/:id',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
     const previousStatus = assessment.status;
 
@@ -831,7 +1095,7 @@ router.delete(
   '/assessments/:id',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
     assessment.is_deleted = true;
@@ -846,7 +1110,7 @@ router.patch(
   '/assessments/:id/status',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
     const previousStatus = assessment.status;
     const status = String(req.body.status || '').toLowerCase();
@@ -873,7 +1137,7 @@ router.patch(
       throw badRequest('Extension must be a whole number from 1 to 180 minutes');
     }
 
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
 
     assessment.duration_minutes += minutes;
@@ -887,7 +1151,7 @@ router.put(
   '/assessments/:id/questions',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
     const validation = validateQuestions(req.body.questions, {
       concept: assessment.concept,
@@ -895,8 +1159,8 @@ router.put(
     });
     if (!validation.valid) throw badRequest('Question validation failed', validation.errors);
 
-    await Question.deleteMany({ assessment_id: assessment._id });
-    const docs = await Question.insertMany(
+    await Question.destroy({ where: { assessment_id: assessment._id } });
+    const docs = await Question.bulkCreate(
       validation.questions.map((question) => ({
         ...question,
         assessment_id: assessment._id,
@@ -915,16 +1179,33 @@ router.get(
   '/assessments/:id/results',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assessment = await Assessment.findById(req.params.id);
+    const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment) throw notFound('Assessment not found');
+    if (req.user.institutionId && assessment.institutionId && assessment.institutionId.toString() !== req.user.institutionId.toString()) {
+      throw forbidden('You do not have access to this assessment');
+    }
 
-    const assignedStudents = await User.find({ role: 'student', assigned_admin: req.user._id }).select('_id');
+    const studentQueryFilter = req.user.institutionId
+      ? { role: 'student', institutionId: req.user.institutionId }
+      : { role: 'student', assigned_admin: req.user._id };
+    const assignedStudents = await User.findAll({ where: studentQueryFilter, attributes: ['_id'] });
     const assignedStudentIds = assignedStudents.map((s) => s._id);
-    const studentFilter = assignedStudentIds.length ? { student_id: { $in: assignedStudentIds } } : { student_id: null };
+    const attemptFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
 
-    const attempts = await AssessmentAttempt.find({ ...studentFilter, assessment_id: assessment._id })
-      .populate('student_id', 'name email')
-      .sort({ submitted_at: -1, started_at: -1 });
+    const attempts = await AssessmentAttempt.findAll({
+      where: { ...attemptFilter, assessment_id: assessment._id },
+      order: [['submitted_at', 'DESC'], ['started_at', 'DESC']],
+    });
+
+    const uniqueStudentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
+    const students = await User.findAll({
+      where: { _id: { [Op.in]: uniqueStudentIds } },
+      attributes: ['_id', 'name', 'email'],
+    });
+    const studentMap = Object.fromEntries(students.map((s) => [s._id, s]));
+    for (const attempt of attempts) {
+      attempt.student_id = studentMap[attempt.student_id] || attempt.student_id;
+    }
 
     res.json({
       results: attempts.map((attempt) => ({
@@ -952,14 +1233,14 @@ router.patch(
       throw badRequest('Extension must be a whole number from 1 to 180 minutes');
     }
 
-    const attempt = await AssessmentAttempt.findById(req.params.attemptId).populate(
-      'student_id',
-      'name email',
-    );
+    const attempt = await AssessmentAttempt.findByPk(req.params.attemptId);
     if (!attempt) throw notFound('Attempt not found');
     if (attempt.status !== 'in_progress') {
       throw badRequest('Only in-progress attempts can be extended');
     }
+
+    const student = await User.findByPk(attempt.student_id, { attributes: ['name', 'email'] });
+    attempt.student_id = student || attempt.student_id;
 
     attempt.extra_time_minutes = (attempt.extra_time_minutes || 0) + minutes;
     await attempt.save();

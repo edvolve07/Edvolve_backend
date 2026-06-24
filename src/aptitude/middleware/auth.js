@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { User } from '../models/User.js';
+import { User, Assessment, Op } from '../../database/index.js';
 import { forbidden, locked, unauthorized } from '../utils/httpError.js';
 
 export async function requireAuth(req, _res, next) {
@@ -12,7 +12,7 @@ export async function requireAuth(req, _res, next) {
     }
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(payload.sub);
+    const user = await User.findByPk(payload.sub);
     if (!user) {
       throw unauthorized('Invalid session');
     }
@@ -54,4 +54,49 @@ export function requireModuleAccess(...modules) {
     }
     next();
   };
+}
+
+export function requireInstitutionAccess(paramName = 'id') {
+  return async (req, _res, next) => {
+    try {
+      if (!req.user) return next(unauthorized());
+      if (req.user.role === 'master_admin') return next();
+
+      const targetId = req.params[paramName] || req.body[paramName] || req.query[paramName];
+      if (!targetId) return next(forbidden('Access denied'));
+
+      if (req.user.role === 'admin') {
+        if (!req.user.institutionId) return next(forbidden('Admin has no institution assigned'));
+
+        const targetDoc = await Assessment.findByPk(targetId, { attributes: ['institutionId'] });
+        if (targetDoc) {
+          if (!targetDoc.institutionId || targetDoc.institutionId.toString() !== req.user.institutionId.toString()) {
+            return next(forbidden('You do not have access to this resource'));
+          }
+          return next();
+        }
+
+        const targetUser = await User.findByPk(targetId, { attributes: ['institutionId', 'role'] });
+        if (targetUser) {
+          if (!targetUser.institutionId || targetUser.institutionId.toString() !== req.user.institutionId.toString()) {
+            return next(forbidden('You do not have access to this user'));
+          }
+          return next();
+        }
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+export async function ensureInstitutionAccess(user, resourceInstitutionId) {
+  if (user.role === 'master_admin') return true;
+  if (user.role === 'admin') {
+    if (!user.institutionId) return false;
+    return user.institutionId.toString() === resourceInstitutionId.toString();
+  }
+  return false;
 }

@@ -33,6 +33,21 @@ function decode(value) {
   }
 }
 
+function sanitizeJudge0Error(msg) {
+  if (!msg) return '';
+  return String(msg)
+    .replace(/JUDGE0_BASE_URL is required when CODE_RUNNER_PROVIDER=judge0/gi, 'Execution service is not configured')
+    .replace(/Judge0 request timed out after \d+ms/gi, 'Execution request timed out')
+    .replace(/Judge0 request failed \(\d+\)/gi, 'Execution request failed')
+    .replace(/Judge0 did not return a submission token/gi, 'Submission token was not generated')
+    .replace(/Judge0 result polling timed out/gi, 'Execution polling timed out')
+    .replace(/Judge0 internal error/gi, 'Execution internal error')
+    .replace(/Unsupported Judge0 language: /gi, 'Unsupported language: ')
+    .replace(/Judge0 is not reachable/gi, 'Execution service is not reachable')
+    .replace(/Judge0 execution probe failed/gi, 'Execution probe failed')
+    .replace(/Judge0/gi, 'Code execution');
+}
+
 function getBaseUrl() {
   return String(process.env.JUDGE0_BASE_URL || '').replace(/\/$/, '');
 }
@@ -90,7 +105,7 @@ function sleep(ms) {
 async function judge0Fetch(path, options = {}) {
   const baseUrl = getBaseUrl();
   if (!baseUrl) {
-    throw new Error('JUDGE0_BASE_URL is required when CODE_RUNNER_PROVIDER=judge0');
+    throw new Error(sanitizeJudge0Error('JUDGE0_BASE_URL is required when CODE_RUNNER_PROVIDER=judge0'));
   }
 
   const timeoutMs = getRequestTimeoutMs();
@@ -113,7 +128,7 @@ async function judge0Fetch(path, options = {}) {
       });
     } catch (error) {
       lastError = error.name === 'AbortError'
-        ? new Error(`Judge0 request timed out after ${timeoutMs}ms`)
+        ? new Error(sanitizeJudge0Error(`Judge0 request timed out after ${timeoutMs}ms`))
         : error;
 
       if (attempt < attempts) {
@@ -137,20 +152,20 @@ async function judge0Fetch(path, options = {}) {
     }
 
     if (!response.ok) {
-      const message = data?.message || data?.error || text || `Judge0 request failed (${response.status})`;
+      const message = sanitizeJudge0Error(data?.message || data?.error || text || `Judge0 request failed (${response.status})`);
       throw new Error(message);
     }
 
     return data;
   }
 
-  throw lastError || new Error('Judge0 request failed');
-}
+    throw lastError || new Error(sanitizeJudge0Error('Judge0 request failed'));
+  }
 
 function toJudge0Status(result, actual, expected) {
   const statusId = result.status?.id;
   const description = result.status?.description || '';
-  const errorText = decode(result.compile_output) || decode(result.stderr) || decode(result.message) || description;
+  const errorText = sanitizeJudge0Error(decode(result.compile_output) || decode(result.stderr) || decode(result.message) || description);
 
   if (statusId === 5) {
     return { status: 'time_limit_exceeded', passed: false, error: 'Time limit exceeded' };
@@ -165,7 +180,7 @@ function toJudge0Status(result, actual, expected) {
   }
 
   if (statusId === 13) {
-    return { status: 'runtime_error', passed: false, error: errorText || 'Judge0 internal error' };
+    return { status: 'runtime_error', passed: false, error: errorText || 'something went wrong while execution please try again' };
   }
 
   if (statusId === 3) {
@@ -205,7 +220,7 @@ async function createSubmission({ code, languageId, input, timeLimit, memoryLimi
   if (wait) return data;
 
   if (!data?.token) {
-    throw new Error('Judge0 did not return a submission token');
+    throw new Error(sanitizeJudge0Error('Judge0 did not return a submission token'));
   }
 
   return data.token;
@@ -235,7 +250,7 @@ async function getSubmissionResult(token) {
     stdout: '',
     stderr: '',
     compile_output: '',
-    message: encode('Judge0 result polling timed out'),
+    message: encode(sanitizeJudge0Error('Judge0 result polling timed out')),
     status: { id: 5, description: 'Time Limit Exceeded' },
     time: null,
   };
@@ -309,7 +324,7 @@ export async function evaluateJudge0Submission(
         expected_output: normalizeOutput(testCase.output || ''),
         actual_output: '',
         passed: false,
-        error: `Unsupported Judge0 language: ${language}`,
+        error: sanitizeJudge0Error(`Unsupported Judge0 language: ${language}`),
         execution_time_ms: 0,
       })),
       execution_time_ms: 0,
@@ -381,7 +396,7 @@ export async function getJudge0Health() {
       configured: true,
       healthy: false,
       base_url: baseUrl,
-      message: error.message || 'Judge0 is not reachable',
+      message: sanitizeJudge0Error(error.message) || sanitizeJudge0Error('Judge0 is not reachable'),
     };
   }
 }
@@ -414,7 +429,7 @@ export async function getJudge0ExecutionHealth() {
     return {
       ...base,
       execution_healthy: false,
-      execution_message: error.message || 'Judge0 execution probe failed',
+      execution_message: sanitizeJudge0Error(error.message) || sanitizeJudge0Error('Judge0 execution probe failed'),
     };
   }
 }

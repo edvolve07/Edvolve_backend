@@ -5,15 +5,16 @@ import morgan from "morgan";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { ObjectId } from "mongodb";
 import { v4 as uuidv4 } from "uuid";
-import { config } from "./config.js";
+import cookieParser from 'cookie-parser';
+import { config, ALLOWED_ORIGINS } from "./config.js";
 import { closeDatabase, collections, connectDatabase } from "./db.js";
 import { hashPassword, verifyPassword, createAuthToken, validateEmail, validatePassword } from "./utils/auth.js";
-import mongoose from "mongoose";
+import { apiLimiter, strictLimiter } from "./middleware/rateLimiter.js";
 import authRoutes from "./aptitude/routes/authRoutes.js";
 import adminRoutes from "./aptitude/routes/adminRoutes.js";
 import masterAdminRoutes from "./aptitude/routes/masterAdminRoutes.js";
+import institutionRoutes from "./aptitude/routes/institutionRoutes.js";
 import studentRoutes from "./aptitude/routes/studentRoutes.js";
 import programmingStudentRoutes from "./programming/routes/studentRoutes.js";
 import programmingAdminRoutes from "./programming/routes/adminRoutes.js";
@@ -38,6 +39,8 @@ import { generateAtsPdf, generatePerformancePdf } from "./services/pdfReports.js
 import { HttpError, asyncHandler } from "./utils/httpError.js";
 import { requireAuth, requireModuleAccess, requireRole } from "./aptitude/middleware/auth.js";
 import { formatDisplayName } from "./aptitude/utils/nameFormat.js";
+import { validateFileType } from "./utils/fileValidation.js";
+import { Op, InterviewSession, InterviewReport, User, AptitudeQuestion, AptitudeResult, syncDatabase } from "./database/index.js";
 
 const app = express();
 const upload = multer({
@@ -45,17 +48,52 @@ const upload = multer({
   limits: { fileSize: config.maxVideoSize }
 });
 
+app.set('trust proxy', 1);
+
+const ALLOWED_ORIGINS_SET = new Set(ALLOWED_ORIGINS);
 app.use(cors({
-  origin: true,
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS_SET.has(origin)) return cb(null, true);
+    cb(null, origin);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-CSRF-Token'],
   maxAge: 86400,
 }));
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      mediaSrc: ["'self'", "blob:"],
+      connectSrc: ["'self'", ...ALLOWED_ORIGINS],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      formAction: ["'self'"],
+      baseUri: ["'self'"],
+    },
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  },
+  xFrameOptions: { action: 'deny' },
+  referrerPolicy: { policy: 'same-origin' },
+}));
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+app.use(cookieParser());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+
+app.use('/api/aptitude', apiLimiter);
+app.use('/api', apiLimiter);
 
 function pickMetrics(evaluation) {
   return Object.fromEntries(
@@ -69,20 +107,17 @@ function fileExtension(file, fallback) {
 }
 
 async function getSession(sessionId) {
-  const { sessions } = collections();
-  const session = await sessions.findOne({ session_id: sessionId });
-
+  const session = await InterviewSession.findOne({ where: { session_id: sessionId } });
   if (!session) {
     throw new HttpError(404, "Session not found");
   }
-
   return session;
 }
 
 function canAccessStudentRecord(user, studentId) {
   if (!user || !studentId) return false;
   if (["admin", "master_admin"].includes(user.role)) return true;
-  return studentId === user._id.toString();
+  return studentId === user._id;
 }
 
 function assertCanAccessSession(user, session) {
@@ -92,10 +127,8 @@ function assertCanAccessSession(user, session) {
 }
 
 async function updateSessionAtomic(sessionId, update) {
-  const { sessions } = collections();
-  const result = await sessions.updateOne({ session_id: sessionId }, { $set: update });
-
-  if (result.matchedCount === 0) {
+  const [affected] = await InterviewSession.update(update, { where: { session_id: sessionId } });
+  if (affected === 0) {
     throw new HttpError(404, "Session not found");
   }
 }
@@ -161,7 +194,7 @@ async function handleAnswer({ sessionId, answer, user, videoMetrics = null }) {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "AI Interview System (Node.js + Groq)",
+    message: "AI Interview System (Node.js + Postgres)",
     version: "1.0-node"
   });
 });
@@ -171,7 +204,7 @@ app.get("/api/health", asyncHandler(async (req, res) => {
   res.json({
     status: "healthy",
     version: "1.0-node",
-    mongodb: "connected",
+    database: "postgresql",
     stt: "groq-whisper-large-v3-turbo",
     code_runner: {
       provider: codeRunner.provider,
@@ -189,7 +222,7 @@ app.get("/api/health/runner", requireAuth, requireRole("admin", "master_admin"),
   });
 }));
 
-app.post("/api/signup", asyncHandler(async (req, res) => {
+app.post("/api/signup", strictLimiter, asyncHandler(async (req, res) => {
   const { email, password, name } = req.body || {};
 
   if (!validateEmail(email) || !validatePassword(password)) {
@@ -197,26 +230,30 @@ app.post("/api/signup", asyncHandler(async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+
+  if (config.masterAdminEmails.has(normalizedEmail) || config.adminEmails.has(normalizedEmail)) {
+    throw new HttpError(403, "Registration is not available for this email");
+  }
+
   const displayName = formatDisplayName(name);
   const { salt, hash } = await hashPassword(password);
   const authToken = createAuthToken();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  const { users } = collections();
 
   try {
-    const result = await users.insertOne({
+    const result = await User.create({
       email: normalizedEmail,
       name: displayName,
       password_hash: hash,
       password_salt: salt,
       auth_token: authToken,
       auth_expires_at: expiresAt,
-      created_at: new Date()
+      is_active: true,
     });
 
     res.status(201).json({
       user: {
-        user_id: String(result.insertedId),
+        user_id: result._id,
         email: normalizedEmail,
         name: displayName
       },
@@ -224,7 +261,7 @@ app.post("/api/signup", asyncHandler(async (req, res) => {
       expires_at: expiresAt
     });
   } catch (error) {
-    if (error.code === 11000) {
+    if (error.name === 'SequelizeUniqueConstraintError') {
       throw new HttpError(409, "Email is already registered");
     }
     throw error;
@@ -239,8 +276,7 @@ app.post("/api/login", asyncHandler(async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const { users } = collections();
-  const user = await users.findOne({ email: normalizedEmail });
+  const user = await User.findOne({ where: { email: normalizedEmail } });
 
   if (!user) {
     throw new HttpError(401, "Invalid email or password");
@@ -252,13 +288,20 @@ app.post("/api/login", asyncHandler(async (req, res) => {
     throw new HttpError(401, "Invalid email or password");
   }
 
+  if (user.is_active === false) {
+    throw new HttpError(403, "Account is deactivated");
+  }
+
   const authToken = createAuthToken();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  await users.updateOne({ _id: user._id }, { $set: { auth_token: authToken, auth_expires_at: expiresAt } });
+  await User.update(
+    { auth_token: authToken, auth_expires_at: expiresAt },
+    { where: { _id: user._id } }
+  );
 
   res.json({
     user: {
-      user_id: String(user._id),
+      user_id: user._id,
       email: user.email,
       name: user.name || ""
     },
@@ -275,16 +318,24 @@ app.get("/api/me", asyncHandler(async (req, res) => {
     throw new HttpError(401, "Missing or invalid authorization header");
   }
 
-  const { users } = collections();
-  const user = await users.findOne({ auth_token: token, auth_expires_at: { $gt: new Date() } });
+  const user = await User.findOne({
+    where: {
+      auth_token: token,
+      auth_expires_at: { [Op.gt]: new Date() }
+    }
+  });
 
   if (!user) {
     throw new HttpError(401, "Invalid or expired auth token");
   }
 
+  if (user.is_active === false) {
+    throw new HttpError(403, "Account is deactivated");
+  }
+
   res.json({
     user: {
-      user_id: String(user._id),
+      user_id: user._id,
       email: user.email,
       name: user.name || ""
     }
@@ -306,6 +357,11 @@ app.post("/api/start", requireAuth, requireModuleAccess('ai_interview'), upload.
     throw new HttpError(400, "PDF required");
   }
 
+  const typeCheck = validateFileType(req.file.buffer, req.file.originalname);
+  if (!typeCheck.valid) {
+    throw new HttpError(400, typeCheck.error);
+  }
+
   const resumeText = await extractTextFromPdf(req.file.buffer);
   const ats = await aiService.analyzeResume(resumeText);
   const firstQuestion = await aiService.generateFirstQuestion(resumeText, domain, role);
@@ -313,7 +369,7 @@ app.post("/api/start", requireAuth, requireModuleAccess('ai_interview'), upload.
 
   const session = {
     session_id: sessionId,
-    student_id: req.user._id.toString(),
+    student_id: req.user._id,
     student_name: req.user.name || "",
     student_email: req.user.email || "",
     student_role: req.user.role || "student",
@@ -325,11 +381,9 @@ app.post("/api/start", requireAuth, requireModuleAccess('ai_interview'), upload.
     current_question: firstQuestion,
     question_count: 1,
     status: "active",
-    created_at: new Date()
   };
 
-  const { sessions } = collections();
-  await sessions.insertOne(session);
+  await InterviewSession.create(session);
 
   res.json({
     session_id: sessionId,
@@ -519,7 +573,7 @@ app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHand
 
   const report = {
     session_id: sessionId,
-    student_id: session.student_id || req.user._id.toString(),
+    student_id: session.student_id,
     student_name: session.student_name || req.user.name || "",
     student_email: session.student_email || req.user.email || "",
     interview_domain: session.domain,
@@ -556,46 +610,30 @@ app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHand
     interview_tips: Array.isArray(summary.interview_tips) ? summary.interview_tips : []
   };
 
-  const { reports } = collections();
-  await reports.updateOne(
-    { session_id: sessionId },
-    {
-      $set: report,
-      $setOnInsert: {
-        created_at: new Date()
-      }
-    },
-    { upsert: true }
-  );
+  await InterviewReport.upsert({
+    session_id: sessionId,
+    ...report,
+  });
   await updateSessionAtomic(sessionId, { status: "ended" });
 
   res.json(report);
 }));
 
 app.get("/api/reports", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
-  const { reports } = collections();
   const query = ["admin", "master_admin"].includes(req.user.role)
     ? {}
-    : { student_id: req.user._id.toString() };
+    : { student_id: req.user._id };
 
-  const items = await reports
-    .find(query, {
-      projection: {
-        _id: 0,
-        session_id: 1,
-        report_id: 1,
-        generated_date: 1,
-        student_name: 1,
-        student_email: 1,
-        interview_domain: 1,
-        interview_role: 1,
-        overall: 1,
-        created_at: 1,
-      },
-    })
-    .sort({ created_at: -1 })
-    .limit(100)
-    .toArray();
+  const items = await InterviewReport.findAll({
+    where: query,
+    attributes: [
+      'session_id', 'report_id', 'generated_date', 'student_name',
+      'student_email', 'interview_domain', 'interview_role',
+      'overall', 'created_at'
+    ],
+    order: [['created_at', 'DESC']],
+    limit: 100,
+  });
 
   res.json({
     reports: items.map((report) => ({
@@ -616,8 +654,10 @@ app.get("/api/reports", requireAuth, requireModuleAccess('ai_interview'), asyncH
 }));
 
 app.get("/api/report/:session_id", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
-  const { reports } = collections();
-  const report = await reports.findOne({ session_id: req.params.session_id }, { projection: { _id: 0 } });
+  const report = await InterviewReport.findOne({
+    where: { session_id: req.params.session_id },
+    attributes: { exclude: ['_id'] },
+  });
 
   if (!report) {
     throw new HttpError(404, "Report not found");
@@ -630,8 +670,10 @@ app.get("/api/report/:session_id", requireAuth, requireModuleAccess('ai_intervie
 }));
 
 app.get("/api/report/:session_id/pdf", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
-  const { reports } = collections();
-  const report = await reports.findOne({ session_id: req.params.session_id }, { projection: { _id: 0 } });
+  const report = await InterviewReport.findOne({
+    where: { session_id: req.params.session_id },
+    attributes: { exclude: ['_id'] },
+  });
 
   if (!report) {
     throw new HttpError(404, "Report not found");
@@ -647,8 +689,10 @@ app.get("/api/report/:session_id/pdf", requireAuth, requireModuleAccess('ai_inte
 }));
 
 app.get("/api/report/:session_id/ats", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
-  const { reports } = collections();
-  const report = await reports.findOne({ session_id: req.params.session_id }, { projection: { _id: 0 } });
+  const report = await InterviewReport.findOne({
+    where: { session_id: req.params.session_id },
+    attributes: { exclude: ['_id'] },
+  });
 
   if (!report) {
     throw new HttpError(404, "Report not found");
@@ -663,7 +707,7 @@ app.get("/api/report/:session_id/ats", requireAuth, requireModuleAccess('ai_inte
   res.send(pdf);
 }));
 
-app.get("/api/aptitude/questions", asyncHandler(async (req, res) => {
+app.get("/api/aptitude/questions", requireAuth, asyncHandler(async (req, res) => {
   const { domain, count = 20 } = req.query;
 
   if (!["engineering", "bca"].includes(domain)) {
@@ -671,22 +715,21 @@ app.get("/api/aptitude/questions", asyncHandler(async (req, res) => {
   }
 
   const sampleSize = Math.min(Number(count) || 20, 100);
-  const { aptitudeQuestions } = collections();
-  const questions = await aptitudeQuestions.aggregate([
-    { $match: { domain } },
-    { $sample: { size: sampleSize } },
-    { $project: { correct_answer: 0, explanation: 0 } }
-  ]).toArray();
+  const questions = await AptitudeQuestion.findAll({
+    where: { domain },
+    order: [['_id', 'ASC']],
+    limit: sampleSize,
+    attributes: { exclude: ['correct_answer', 'explanation', '_id'] },
+  });
 
   res.json({
     questions: questions.map((question) => ({
-      ...question,
-      _id: String(question._id)
+      ...question.toJSON(),
     }))
   });
 }));
 
-app.post("/api/aptitude/submit", asyncHandler(async (req, res) => {
+app.post("/api/aptitude/submit", requireAuth, asyncHandler(async (req, res) => {
   const { domain, answers } = req.body || {};
 
   if (!domain || !answers || typeof answers !== "object") {
@@ -694,18 +737,13 @@ app.post("/api/aptitude/submit", asyncHandler(async (req, res) => {
   }
 
   const ids = Object.keys(answers);
-  const objectIds = ids.filter(ObjectId.isValid).map((id) => new ObjectId(id));
-  const { aptitudeQuestions, aptitudeResults } = collections();
-  const questions = await aptitudeQuestions.find({
-    $or: [
-      { _id: { $in: objectIds } },
-      { _id: { $in: ids } }
-    ]
-  }).toArray();
+  const questions = await AptitudeQuestion.findAll({
+    where: { _id: { [Op.in]: ids } }
+  });
 
   let correct = 0;
   const detailed = questions.map((question) => {
-    const questionId = String(question._id);
+    const questionId = question._id;
     const isCorrect = answers[questionId] === question.correct_answer;
     if (isCorrect) {
       correct += 1;
@@ -730,11 +768,10 @@ app.post("/api/aptitude/submit", asyncHandler(async (req, res) => {
     detailed
   };
 
-  await aptitudeResults.insertOne({
+  await AptitudeResult.create({
     user_id: null,
     domain,
     result,
-    timestamp: new Date()
   });
 
   res.json(result);
@@ -743,6 +780,7 @@ app.post("/api/aptitude/submit", asyncHandler(async (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/master", masterAdminRoutes);
+app.use("/api/institutions", institutionRoutes);
 app.use("/api/student", studentRoutes);
 app.use("/api/programming/student", programmingStudentRoutes);
 app.use("/api/programming/admin", programmingAdminRoutes);
@@ -783,18 +821,10 @@ app.use((error, _req, res, _next) => {
 
 async function start() {
   await connectDatabase();
-
-  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || config.mongoUri;
-  if (!mongoUri) {
-    throw new Error("MONGODB_URI or MONGO_URI is required for integrated routes");
+  if (!config.isProduction) {
+    await syncDatabase({ alter: false });
+    console.log('Database tables synced');
   }
-
-  if (mongoose.connection.readyState === 0) {
-    mongoose.set("strictQuery", true);
-    await mongoose.connect(mongoUri);
-    console.log("Mongoose connected");
-  }
-
   const server = app.listen(config.port, "0.0.0.0", () => {
     console.log(`Server running on 0.0.0.0:${config.port}`);
   });
@@ -804,7 +834,6 @@ async function start() {
       console.error(`Port ${config.port} is already in use. Set PORT to another value in .env.`);
       process.exit(1);
     }
-
     console.error(error);
     process.exit(1);
   });
@@ -812,13 +841,11 @@ async function start() {
 
 process.on("SIGINT", async () => {
   await closeDatabase();
-  await mongoose.disconnect();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
   await closeDatabase();
-  await mongoose.disconnect();
   process.exit(0);
 });
 

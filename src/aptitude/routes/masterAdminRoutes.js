@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import multer from 'multer';
 import path from 'node:path';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { User } from '../models/User.js';
+import { User, Op, Institution, Department } from '../../database/index.js';
 import { config } from '../../config.js';
 import { aiService } from '../../services/aiService.js';
 import { summarizeAiUsage } from '../../services/aiUsageService.js';
@@ -63,13 +63,18 @@ function validateEmail(email) {
 
 function serializeUser(user) {
   const obj = {
-    id: user._id.toString(),
+    id: user._id,
     name: user.name,
     email: user.email,
     phone: user.phone || '',
     organization: user.organization || '',
+    usn: user.usn || '',
+    department_id: user.department_id || null,
+    year: user.year || '',
+    admin_role: user.admin_role || '',
     modules_access: user.modules_access || ['both'],
-    assigned_admin: user.assigned_admin?._id?.toString() ?? (user.assigned_admin ? user.assigned_admin.toString() : null),
+    institutionId: user.institutionId || null,
+    assigned_admin: user.assigned_admin || null,
     must_change_password: user.must_change_password !== false,
     role: user.role,
     role_label: roleLabel(user.role),
@@ -79,6 +84,12 @@ function serializeUser(user) {
   };
   if (user.assigned_admin_name) {
     obj.assigned_admin_name = user.assigned_admin_name;
+  }
+  if (user.department_name) {
+    obj.department_name = user.department_name;
+  }
+  if (user.institution_name) {
+    obj.institution_name = user.institution_name;
   }
   return obj;
 }
@@ -252,29 +263,21 @@ router.get(
   asyncHandler(async (_req, res) => {
     const [
       totalUsers,
-      students,
-      admins,
-      masterAdmins,
+      totalInstitutions,
       recentUsers,
-      aiUsage,
     ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ role: ROLES.STUDENT }),
-      User.countDocuments({ role: ROLES.ADMIN }),
-      User.countDocuments({ role: ROLES.MASTER_ADMIN }),
-      User.find().sort({ created_at: -1 }).limit(8),
-      summarizeAiUsage(),
+      User.count(),
+      Institution.count(),
+      User.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
     ]);
 
     res.json({
       totals: {
         users: totalUsers,
-        students,
-        admins,
-        master_admins: masterAdmins,
+        institutions: totalInstitutions,
       },
       recent_users: recentUsers.map((user) => ({
-        id: user._id.toString(),
+        id: user._id,
         name: user.name,
         email: user.email,
         phone: user.phone || '',
@@ -285,7 +288,6 @@ router.get(
         is_active: user.is_active !== false,
         created_at: user.created_at,
       })),
-      ai_usage: aiUsage,
     });
   }),
 );
@@ -303,27 +305,56 @@ router.get(
       filter.role = role;
     }
 
+    const institutionId = String(req.query.institution_id || '').trim();
+
     if (adminId) {
       filter.assigned_admin = adminId;
     }
 
+    if (institutionId) {
+      filter.institutionId = institutionId;
+    }
+
     if (query) {
-      filter.$or = [
-        { name: { $regex: query, $options: 'i' } },
-        { email: { $regex: query, $options: 'i' } },
+      filter[Op.or] = [
+        { name: { [Op.iLike]: `%${query}%` } },
+        { email: { [Op.iLike]: `%${query}%` } },
       ];
     }
 
-    const users = await User.find(filter)
-      .populate('assigned_admin', 'name email')
-      .sort({ created_at: -1 })
-      .limit(limit);
+    const users = await User.findAll({
+      where: filter,
+      order: [['created_at', 'DESC']],
+      limit,
+    });
+
+    const adminIds = users.map((u) => u.assigned_admin).filter(Boolean);
+    const institutionIds = users.map((u) => u.institutionId).filter(Boolean);
+
+    const [admins, institutions] = await Promise.all([
+      adminIds.length
+        ? User.findAll({ where: { _id: { [Op.in]: adminIds } }, attributes: ['_id', 'name', 'email'], raw: true })
+        : [],
+      institutionIds.length
+        ? Institution.findAll({ where: { _id: { [Op.in]: institutionIds } }, attributes: ['_id', 'name', 'code'], raw: true })
+        : [],
+    ]);
+
+    const adminMap = new Map(admins.map((a) => [a._id, a]));
+    const institutionMap = new Map(institutions.map((i) => [i._id, i]));
+
     res.json({
       users: users.map((u) => {
         const s = serializeUser(u);
-        if (u.assigned_admin) {
-          s.assigned_admin_name = u.assigned_admin.name;
-          s.assigned_admin_email = u.assigned_admin.email;
+        const admin = adminMap.get(u.assigned_admin);
+        if (admin) {
+          s.assigned_admin_name = admin.name;
+          s.assigned_admin_email = admin.email;
+        }
+        const inst = institutionMap.get(u.institutionId);
+        if (inst) {
+          s.institution_name = inst.name || '';
+          s.institution_code = inst.code || '';
         }
         return s;
       }),
@@ -333,20 +364,52 @@ router.get(
 
 router.get(
   '/admins-list',
-  asyncHandler(async (_req, res) => {
-    const admins = await User.find({
-      role: ROLES.ADMIN,
-    })
-      .select('name email phone organization modules_access')
-      .sort({ name: 1 });
+  asyncHandler(async (req, res) => {
+    const filter = { role: ROLES.ADMIN };
+    if (req.query.institutionId) {
+      filter.institutionId = req.query.institutionId;
+    }
+    const admins = await User.findAll({
+      where: filter,
+      attributes: ['_id', 'name', 'email', 'phone', 'organization', 'modules_access', 'institutionId'],
+      order: [['name', 'ASC']],
+    });
+
+    const institutionIds = admins.map((a) => a.institutionId).filter(Boolean);
+    const institutions = institutionIds.length
+      ? await Institution.findAll({ where: { _id: { [Op.in]: institutionIds } }, attributes: ['_id', 'name', 'code'], raw: true })
+      : [];
+    const institutionMap = new Map(institutions.map((i) => [i._id, i]));
+
     res.json({
       admins: admins.map((a) => ({
-        id: a._id.toString(),
+        id: a._id,
         name: a.name,
         email: a.email,
         phone: a.phone || '',
         organization: a.organization || '',
         modules_access: a.modules_access || ['both'],
+        institutionId: a.institutionId || null,
+        institution_name: institutionMap.get(a.institutionId)?.name || '',
+      })),
+    });
+  }),
+);
+
+router.get(
+  '/institutions-list',
+  asyncHandler(async (_req, res) => {
+    const institutions = await Institution.findAll({
+      where: { status: 'active' },
+      attributes: ['_id', 'name', 'code', 'email'],
+      order: [['name', 'ASC']],
+    });
+    res.json({
+      institutions: institutions.map((inst) => ({
+        id: inst._id,
+        name: inst.name,
+        code: inst.code,
+        email: inst.email,
       })),
     });
   }),
@@ -358,6 +421,8 @@ router.post(
     const name = String(req.body.name || '').trim();
     const email = normalizeEmail(req.body.email);
     const phone = String(req.body.phone || '').trim();
+    const departmentId = req.body.department_id || null;
+    const adminRole = req.body.admin_role || '';
     const organization = String(req.body.organization || '').trim();
     const modules = normalizeModules(req.body.modules_access);
     const errors = [];
@@ -365,42 +430,69 @@ router.post(
     if (name.length < 2) errors.push('Full name is required');
     if (!validateEmail(email)) errors.push('A valid email is required');
     if (phone && !validatePhone(phone)) errors.push('Phone number is invalid');
+    if (departmentId) {
+      const dept = await Department.findByPk(departmentId);
+      if (!dept) errors.push('Department not found');
+    }
+    if (adminRole && !['hod', 'placement_officer'].includes(adminRole)) {
+      errors.push("Admin role must be 'hod' or 'placement_officer'");
+    }
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await User.findOne({ email });
+    const existingByEmail = await User.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await User.findOne({ phone });
+      const existingByPhone = await User.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
     const tempPassword = generateTempPassword(name);
-    const passwordHash = await bcrypt.hash(tempPassword, 12);
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+    const institutionId = req.body.institutionId || null;
+    if (institutionId) {
+      const institution = await Institution.findByPk(institutionId);
+      if (!institution) throw badRequest('Institution not found');
+    }
+
+    let departmentName = '';
+    if (departmentId) {
+      const dept = await Department.findByPk(departmentId);
+      if (dept) departmentName = dept.name;
+    }
 
     const user = await User.create({
       name,
       email,
       phone,
+      department_id: departmentId,
+      admin_role: adminRole,
       organization,
       modules_access: modules,
+      institutionId: institutionId || undefined,
       role: ROLES.ADMIN,
       password_hash: passwordHash,
       must_change_password: true,
     });
 
+    let emailSent = false;
     if (isEmailServiceConfigured()) {
       try {
         await sendAccountCreationEmail({ to: email, name, tempPassword });
-      } catch (emailError) {
-        console.error('[admin-creation] Email failed:', emailError.message);
+        emailSent = true;
+      } catch (err) {
+        console.error('[admin-creation] Email failed:', err.message);
       }
     }
 
+    const serialized = serializeUser(user);
+    serialized.department_name = departmentName;
+
     res.status(201).json({
-      user: serializeUser(user),
+      user: serialized,
       temp_password: tempPassword,
-      email_sent: isEmailServiceConfigured(),
+      email_sent: emailSent,
     });
   }),
 );
@@ -412,7 +504,19 @@ router.post(
     if (!req.file) throw badRequest('Upload file is required', ['Choose a CSV or Excel file']);
 
     const defaultModules = normalizeModules(req.body.modules_access);
+    const institutionId = req.body.institutionId || null;
     const errors = [];
+
+    if (institutionId) {
+      const institution = await Institution.findByPk(institutionId);
+      if (!institution) throw badRequest('Institution not found');
+    }
+
+    let allDepartments = [];
+    if (institutionId) {
+      allDepartments = await Department.findAll({ where: { institution_id: institutionId } });
+    }
+
     if (errors.length) throw badRequest('Validation failed', errors);
 
     const rows = await parseUserUpload(req.file);
@@ -429,12 +533,19 @@ router.post(
 
     const emailConfigured = isEmailServiceConfigured();
 
+    function deptByName(name) {
+      return allDepartments.find((d) => d.name.toLowerCase() === String(name).trim().toLowerCase());
+    }
+
     for (const [index, row] of rows.entries()) {
       const rowNumber = index + 2;
       const name = getRowValue(row, ['name', 'fullname', 'username', 'user']);
       const email = normalizeEmail(getRowValue(row, ['email', 'emailid', 'mail', 'mailid']));
       const phone = getRowValue(row, ['phone', 'phonenumber', 'mobile', 'contact']);
       const organization = getRowValue(row, ['organization', 'org', 'company', 'institution']);
+      const departmentName = getRowValue(row, ['department', 'department_name', 'departmentname', 'dept', 'branch']);
+      const adminRoleRaw = getRowValue(row, ['admin_role', 'adminrole', 'role', 'position']).toLowerCase().replace(/\s+/g, '_');
+      const adminRole = ['hod', 'placement_officer'].includes(adminRoleRaw) ? adminRoleRaw : '';
       const rowModules = normalizeModules(
         getRowValue(row, ['modules', 'modules_access', 'access', 'module']),
       );
@@ -451,7 +562,19 @@ router.post(
         continue;
       }
 
-      const existingByEmail = await User.findOne({ email });
+      let departmentId = null;
+      if (departmentName) {
+        const dept = deptByName(departmentName);
+        if (dept) {
+          departmentId = dept._id;
+        } else {
+          summary.skipped += 1;
+          summary.errors.push(`Row ${rowNumber}: department "${departmentName}" not found in this institution`);
+          continue;
+        }
+      }
+
+      const existingByEmail = await User.findOne({ where: { email } });
       if (existingByEmail) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: email ${email} is already registered`);
@@ -459,7 +582,7 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await User.findOne({ phone });
+        const existingByPhone = await User.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
@@ -468,30 +591,33 @@ router.post(
       }
 
       const tempPassword = generateTempPassword(name);
-      const passwordHash = await bcrypt.hash(tempPassword, 12);
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
 
       try {
         const user = await User.create({
           name,
           email,
           phone,
+          department_id: departmentId,
+          admin_role: adminRole,
           organization,
           modules_access: modules,
           role: ROLES.ADMIN,
+          institutionId: institutionId || undefined,
           password_hash: passwordHash,
           must_change_password: true,
         });
 
         if (emailConfigured) {
-          try {
-            await sendAccountCreationEmail({ to: email, name, tempPassword });
-          } catch (emailError) {
-            summary.email_failures.push({ email, error: emailError.message });
-          }
+          sendAccountCreationEmail({ to: email, name, tempPassword })
+            .catch((err) => { summary.email_failures.push({ email, error: err.message }); });
         }
 
+        const serialized = serializeUser(user);
+        if (departmentName) serialized.department_name = departmentName;
+        serialized.temp_password = tempPassword;
         summary.created += 1;
-        summary.users.push({ ...serializeUser(user), temp_password: tempPassword });
+        summary.users.push(serialized);
       } catch (createError) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: ${createError.message}`);
@@ -508,33 +634,64 @@ router.post(
     const name = String(req.body.name || '').trim();
     const email = normalizeEmail(req.body.email);
     const phone = String(req.body.phone || '').trim();
+    const usn = String(req.body.usn || '').trim();
+    const departmentId = req.body.department_id || null;
+    const year = String(req.body.year || '').trim();
     const organization = String(req.body.organization || '').trim();
     const assignedAdminId = req.body.assigned_admin || null;
+    const institutionId = req.body.institutionId || null;
     const errors = [];
 
     if (name.length < 2) errors.push('Full name is required');
     if (!validateEmail(email)) errors.push('A valid email is required');
     if (phone && !validatePhone(phone)) errors.push('Phone number is invalid');
+    if (departmentId) {
+      const dept = await Department.findByPk(departmentId);
+      if (!dept) errors.push('Department not found');
+    }
+    if (year && !['1st', '2nd', '3rd', '4th'].includes(year)) {
+      errors.push("Year must be one of: 1st, 2nd, 3rd, 4th");
+    }
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await User.findOne({ email });
+    const existingByEmail = await User.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await User.findOne({ phone });
+      const existingByPhone = await User.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
+    if (usn) {
+      const existingByUsn = await User.findOne({ where: { usn } });
+      if (existingByUsn) throw badRequest('USN is already registered', ['USN is already registered']);
+    }
+
+    let effectiveInstitutionId = institutionId;
     let modulesAccess = ['both'];
     let assignedAdminName = '';
+    let departmentName = '';
+
+    if (institutionId) {
+      const institution = await Institution.findByPk(institutionId);
+      if (!institution) throw badRequest('Institution not found');
+    }
+
+    if (departmentId) {
+      const dept = await Department.findByPk(departmentId);
+      if (dept) departmentName = dept.name;
+    }
 
     if (assignedAdminId) {
-      const admin = await User.findById(assignedAdminId);
+      const admin = await User.findByPk(assignedAdminId);
       if (!admin || (admin.role !== 'admin' && admin.role !== 'master_admin')) {
         throw badRequest('Assigned admin not found', ['Specified admin does not exist']);
       }
       modulesAccess = admin.modules_access || ['both'];
       assignedAdminName = admin.name;
+      if (!effectiveInstitutionId && admin.institutionId) {
+        effectiveInstitutionId = admin.institutionId;
+      }
     }
 
     const tempPassword = generateTempPassword(name);
@@ -543,29 +700,36 @@ router.post(
       name,
       email,
       phone,
+      usn: usn || undefined,
+      department_id: departmentId,
+      year: year || undefined,
       organization,
       modules_access: modulesAccess,
+      institutionId: effectiveInstitutionId || undefined,
       assigned_admin: assignedAdminId || null,
       role: ROLES.STUDENT,
-      password_hash: await bcrypt.hash(tempPassword, 12),
+      password_hash: await bcrypt.hash(tempPassword, 10),
       must_change_password: true,
     });
 
+    let emailSent = false;
     if (isEmailServiceConfigured()) {
       try {
         await sendAccountCreationEmail({ to: email, name, tempPassword });
-      } catch (emailError) {
-        console.error('[user-creation] Email failed:', emailError.message);
+        emailSent = true;
+      } catch (err) {
+        console.error('[user-creation] Email failed:', err.message);
       }
     }
 
     const serialized = serializeUser(user);
     serialized.assigned_admin_name = assignedAdminName;
+    serialized.department_name = departmentName;
 
     res.status(201).json({
       user: serialized,
       temp_password: tempPassword,
-      email_sent: isEmailServiceConfigured(),
+      email_sent: emailSent,
     });
   }),
 );
@@ -577,18 +741,33 @@ router.post(
     if (!req.file) throw badRequest('Upload file is required', ['Choose a CSV or Excel file']);
 
     const assignedAdminId = req.body.assigned_admin || null;
+    const institutionId = req.body.institutionId || null;
     const errors = [];
 
     let defaultModules = ['both'];
     let assignedAdminName = '';
+    let effectiveInstitutionId = institutionId;
+
+    if (institutionId) {
+      const institution = await Institution.findByPk(institutionId);
+      if (!institution) throw badRequest('Institution not found');
+    }
+
+    let allDepartments = [];
+    if (institutionId) {
+      allDepartments = await Department.findAll({ where: { institution_id: institutionId } });
+    }
 
     if (assignedAdminId) {
-      const admin = await User.findById(assignedAdminId);
+      const admin = await User.findByPk(assignedAdminId);
       if (!admin || (admin.role !== 'admin' && admin.role !== 'master_admin')) {
         throw badRequest('Assigned admin not found', ['Specified admin does not exist']);
       }
       defaultModules = admin.modules_access || ['both'];
       assignedAdminName = admin.name;
+      if (!effectiveInstitutionId && admin.institutionId) {
+        effectiveInstitutionId = admin.institutionId;
+      }
     }
 
     if (errors.length) throw badRequest('Validation failed', errors);
@@ -607,11 +786,19 @@ router.post(
 
     const emailConfigured = isEmailServiceConfigured();
 
+    function deptByName(name) {
+      return allDepartments.find((d) => d.name.toLowerCase() === String(name).trim().toLowerCase());
+    }
+
     for (const [index, row] of rows.entries()) {
       const rowNumber = index + 2;
       const name = getRowValue(row, ['name', 'fullname', 'username', 'user']);
       const email = normalizeEmail(getRowValue(row, ['email', 'emailid', 'mail', 'mailid']));
       const phone = getRowValue(row, ['phone', 'phonenumber', 'mobile', 'contact']);
+      const usn = getRowValue(row, ['usn', 'rollno', 'roll_no', 'rollnumber', 'regno', 'reg_no', 'regnumber']);
+      const departmentName = getRowValue(row, ['department', 'department_name', 'departmentname', 'dept', 'branch']);
+      const yearRaw = getRowValue(row, ['year', 'academic_year', 'academicyear', 'semester']).toLowerCase().trim();
+      const year = ['1st', '2nd', '3rd', '4th'].includes(yearRaw) ? yearRaw : '';
       const organization = getRowValue(row, ['organization', 'org', 'company', 'institution']);
 
       if (name.length < 2) {
@@ -625,7 +812,21 @@ router.post(
         continue;
       }
 
-      const existingByEmail = await User.findOne({ email });
+      let departmentId = null;
+      let resolvedDeptName = '';
+      if (departmentName) {
+        const dept = deptByName(departmentName);
+        if (dept) {
+          departmentId = dept._id;
+          resolvedDeptName = dept.name;
+        } else {
+          summary.skipped += 1;
+          summary.errors.push(`Row ${rowNumber}: department "${departmentName}" not found in this institution`);
+          continue;
+        }
+      }
+
+      const existingByEmail = await User.findOne({ where: { email } });
       if (existingByEmail) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: email ${email} is already registered`);
@@ -633,10 +834,19 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await User.findOne({ phone });
+        const existingByPhone = await User.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
+          continue;
+        }
+      }
+
+      if (usn) {
+        const existingByUsn = await User.findOne({ where: { usn } });
+        if (existingByUsn) {
+          summary.skipped += 1;
+          summary.errors.push(`Row ${rowNumber}: USN ${usn} is already registered`);
           continue;
         }
       }
@@ -648,24 +858,26 @@ router.post(
           name,
           email,
           phone,
+          usn: usn || undefined,
+          department_id: departmentId,
+          year: year || undefined,
           organization,
           modules_access: defaultModules,
+          institutionId: effectiveInstitutionId || undefined,
           assigned_admin: assignedAdminId || null,
           role: ROLES.STUDENT,
-          password_hash: await bcrypt.hash(tempPassword, 12),
+          password_hash: await bcrypt.hash(tempPassword, 10),
           must_change_password: true,
         });
 
         if (emailConfigured) {
-          try {
-            await sendAccountCreationEmail({ to: email, name, tempPassword });
-          } catch (emailError) {
-            summary.email_failures.push({ email, error: emailError.message });
-          }
+          sendAccountCreationEmail({ to: email, name, tempPassword })
+            .catch((err) => { summary.email_failures.push({ email, error: err.message }); });
         }
 
         const serialized = serializeUser(user);
         if (assignedAdminName) serialized.assigned_admin_name = assignedAdminName;
+        if (resolvedDeptName) serialized.department_name = resolvedDeptName;
         serialized.temp_password = tempPassword;
         summary.created += 1;
         summary.users.push(serialized);
@@ -724,11 +936,11 @@ router.post(
     if (phone && !validatePhone(phone)) errors.push('Phone number is invalid');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await User.findOne({ email });
+    const existingByEmail = await User.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await User.findOne({ phone });
+      const existingByPhone = await User.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
@@ -741,22 +953,24 @@ router.post(
       modules_access: modules,
       assigned_admin: assignedAdminId || null,
       role,
-      password_hash: await bcrypt.hash(effectivePassword, 12),
+      password_hash: await bcrypt.hash(effectivePassword, 10),
       must_change_password: true,
     });
 
+    let emailSent = false;
     if (isEmailServiceConfigured()) {
       try {
         await sendAccountCreationEmail({ to: email, name, tempPassword: effectivePassword });
-      } catch (emailError) {
-        console.error('[user-creation] Email failed:', emailError.message);
+        emailSent = true;
+      } catch (err) {
+        console.error('[user-creation] Email failed:', err.message);
       }
     }
 
     res.status(201).json({
       user: serializeUser(user),
       temp_password: password.length < 8 ? effectivePassword : undefined,
-      email_sent: isEmailServiceConfigured(),
+      email_sent: emailSent,
     });
   }),
 );
@@ -787,7 +1001,10 @@ router.post(
       skipped: 0,
       errors: [],
       users: [],
+      email_failures: [],
     };
+
+    const emailConfigured = isEmailServiceConfigured();
 
     for (const [index, row] of rows.entries()) {
       const rowNumber = index + 2;
@@ -825,9 +1042,9 @@ router.post(
         continue;
       }
 
-      const existing = await User.findOne({ email });
+      const existing = await User.findOne({ where: { email } });
       if (existing) {
-        if (existing._id.toString() === req.user._id.toString() && role !== ROLES.MASTER_ADMIN) {
+        if (existing._id === req.user._id && role !== ROLES.MASTER_ADMIN) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: cannot remove your own master admin access`);
           continue;
@@ -845,7 +1062,7 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await User.findOne({ phone });
+        const existingByPhone = await User.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
@@ -862,9 +1079,15 @@ router.post(
         modules_access: modules,
         assigned_admin: assignedAdminId || null,
         role,
-        password_hash: await bcrypt.hash(effectivePassword, 12),
+        password_hash: await bcrypt.hash(effectivePassword, 10),
         must_change_password: true,
       });
+
+      if (emailConfigured) {
+        sendAccountCreationEmail({ to: email, name, tempPassword: effectivePassword })
+          .catch((err) => { summary.email_failures.push({ email, error: err.message }); });
+      }
+
       summary.created += 1;
       summary.users.push({ ...serializeUser(user), action: 'created' });
     }
@@ -879,11 +1102,11 @@ router.patch(
     const role = String(req.body.role || '');
     if (!assignableRoles.has(role)) throw badRequest('Invalid role', ['Invalid role']);
 
-    if (req.params.id === req.user._id.toString() && role !== ROLES.MASTER_ADMIN) {
+    if (req.params.id === req.user._id && role !== ROLES.MASTER_ADMIN) {
       throw forbidden('You cannot remove your own master admin access');
     }
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.role = role;
@@ -902,16 +1125,16 @@ router.patch(
     const valid = modules.every((m) => MODULE_OPTIONS.includes(m));
     if (!valid) throw badRequest('Invalid module', ['Valid modules: ai_interview, aptitude, programming, both']);
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     const normalizedModules = modules.includes('both') ? ['both'] : modules;
     user.modules_access = normalizedModules;
     await user.save();
 
-    await User.updateMany(
-      { assigned_admin: user._id, role: 'student' },
-      { $set: { modules_access: normalizedModules } },
+    await User.update(
+      { modules_access: normalizedModules },
+      { where: { assigned_admin: user._id, role: 'student' } },
     );
 
     res.json({ user: serializeUser(user) });
@@ -921,20 +1144,20 @@ router.patch(
 router.patch(
   '/users/:id/revoke',
   asyncHandler(async (req, res) => {
-    if (req.params.id === req.user._id.toString()) {
+    if (req.params.id === req.user._id) {
       throw forbidden('You cannot revoke your own access');
     }
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.is_active = false;
     await user.save();
 
     if (user.role === ROLES.ADMIN) {
-      await User.updateMany(
-        { assigned_admin: user._id },
+      await User.update(
         { is_active: false },
+        { where: { assigned_admin: user._id } },
       );
     }
 
@@ -945,11 +1168,11 @@ router.patch(
 router.patch(
   '/users/:id/restore',
   asyncHandler(async (req, res) => {
-    if (req.params.id === req.user._id.toString()) {
+    if (req.params.id === req.user._id) {
       throw forbidden('You cannot restore your own access');
     }
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.is_active = true;
@@ -962,14 +1185,14 @@ router.patch(
 router.delete(
   '/users/:id',
   asyncHandler(async (req, res) => {
-    if (req.params.id === req.user._id.toString()) {
+    if (req.params.id === req.user._id) {
       throw forbidden('You cannot delete your own account');
     }
 
-    const user = await User.findById(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
-    await User.deleteOne({ _id: user._id });
+    await User.destroy({ where: { _id: user._id } });
     res.status(204).end();
   }),
 );

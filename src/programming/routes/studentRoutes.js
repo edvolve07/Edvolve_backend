@@ -1,25 +1,28 @@
 import express from 'express';
 import { requireAuth, requireModuleAccess, requireRole } from '../../aptitude/middleware/auth.js';
-import { User } from '../../aptitude/models/User.js';
-import { ProgrammingChallenge } from '../models/ProgrammingChallenge.js';
-import { ProgrammingContest } from '../models/ProgrammingContest.js';
-import { ProgrammingDiscussion } from '../models/ProgrammingDiscussion.js';
-import { ProgrammingEditorial } from '../models/ProgrammingEditorial.js';
-import { ProgrammingProblem } from '../models/ProgrammingProblem.js';
-import { ProgrammingSubmission } from '../models/ProgrammingSubmission.js';
+import {
+  Op,
+  User,
+  ProgrammingChallenge,
+  ProgrammingContest,
+  ProgrammingDiscussion,
+  ProgrammingEditorial,
+  ProgrammingProblem,
+  ProgrammingSubmission,
+  getSequelize,
+} from '../../database/index.js';
 import { evaluateSubmission } from '../services/executionService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, forbidden, notFound } from '../utils/httpError.js';
 import {
+  sanitizeStudentError,
   sanitizeStudentSubmissionError,
   serializeStudentTestResult,
 } from '../utils/studentResultSerializer.js';
 import { DEFAULT_PRACTICE_LANGUAGES, LANGUAGE_IDS } from '../utils/constants.js';
-import {
-  isVisibleProblemTitle,
-  visibleProblemTitleFilter,
-} from '../utils/problemVisibility.js';
+import { isVisibleProblemTitle, INVALID_PROBLEM_TITLE_PATTERN } from '../utils/problemVisibility.js';
 
+const sequelize = getSequelize();
 const router = express.Router();
 
 router.use(requireAuth, requireRole('student'), requireModuleAccess('programming'));
@@ -79,25 +82,35 @@ function serializeProblemDetail(problem) {
   };
 }
 
-function studentProblemPrivacyFilter(user, prefix = '') {
-  const field = (name) => (prefix ? `${prefix}.${name}` : name);
+function studentProblemPrivacyFilterSequelize(user, prefix = '') {
+  const field = (name) => (prefix ? sequelize.col(`${prefix}.${name}`) : name);
   if (!user.assigned_admin) {
-    return { [field('is_private_bank')]: { $ne: true } };
+    return { [field('is_private_bank')]: { [Op.ne]: true } };
   }
   return {
-    $or: [
-      { [field('is_private_bank')]: { $ne: true } },
+    [Op.or]: [
+      { [field('is_private_bank')]: { [Op.ne]: true } },
       { [field('institution_id')]: user.assigned_admin },
     ],
   };
 }
 
-function studentVisibleProblemFilter(user, extra = {}, prefix = '') {
-  return {
-    ...extra,
-    ...visibleProblemTitleFilter(prefix ? `${prefix}.title` : 'title'),
-    ...studentProblemPrivacyFilter(user, prefix),
+function studentVisibleProblemWhere(user) {
+  const conditions = {
+    status: 'published',
+    is_deleted: { [Op.ne]: true },
+    is_auto_gradable: { [Op.ne]: false },
+    title: { [Op.notIRegexp]: '^#?\\s*Topic\\s+\\d+\\s*:|^(Easy|Medium|Hard)\\s*\\(' },
   };
+  if (!user.assigned_admin) {
+    conditions.is_private_bank = { [Op.ne]: true };
+  } else {
+    conditions[Op.or] = [
+      { is_private_bank: { [Op.ne]: true } },
+      { institution_id: user.assigned_admin },
+    ];
+  }
+  return conditions;
 }
 
 function canStudentSeeProblem(problem, user) {
@@ -119,15 +132,15 @@ function canStudentSeeProblem(problem, user) {
 }
 
 async function getVisibleProblemOrThrow(id, user) {
-  const problem = await ProgrammingProblem.findById(id);
+  const problem = await ProgrammingProblem.findByPk(id);
   if (!canStudentSeeProblem(problem, user)) {
     throw notFound('Problem not found');
   }
   return problem;
 }
 
-function serializeSubmissionSummary(submission) {
-  const problem = submission.problem_id;
+function serializeSubmissionSummary(submission, problemsMap) {
+  const problem = problemsMap ? problemsMap.get(submission.problem_id) : null;
   return {
     id: submission._id.toString(),
     problem_id: problem?._id?.toString() || submission.problem_id?.toString?.() || '',
@@ -146,7 +159,7 @@ function serializeSubmissionSummary(submission) {
 function serializeCodeByLanguage(value) {
   if (!value) return {};
   if (value instanceof Map) return Object.fromEntries(value);
-  if (typeof value.toObject === 'function') return value.toObject();
+  if (typeof value === 'object' && value.dataValues) return value.get({ plain: true });
   return value;
 }
 
@@ -186,11 +199,14 @@ function serializeEditorial(editorial, problem) {
 
 async function getInstitutionStudentIds(user) {
   if (!user.assigned_admin) return [user._id];
-  const peers = await User.find({
-    role: 'student',
-    assigned_admin: user.assigned_admin,
-    is_active: { $ne: false },
-  }).select('_id');
+  const peers = await User.findAll({
+    where: {
+      role: 'student',
+      assigned_admin: user.assigned_admin,
+      is_active: { [Op.ne]: false },
+    },
+    attributes: ['_id'],
+  });
   return peers.map((peer) => peer._id);
 }
 
@@ -210,95 +226,81 @@ function serializeChallenge(challenge, problem, solvedSet) {
 }
 
 async function getFallbackChallenge(type, solvedSet, user) {
-  const count = await ProgrammingProblem.countDocuments(studentVisibleProblemFilter(user, {
-    status: 'published',
-    is_deleted: { $ne: true },
-    is_auto_gradable: { $ne: false },
-  }));
+  const count = await ProgrammingProblem.count({
+    where: studentVisibleProblemWhere(user),
+  });
   if (!count) return null;
   const now = new Date();
   const dayNumber = Math.floor(now.getTime() / 86400000);
   const index = type === 'weekly'
     ? Math.floor(dayNumber / 7) % count
     : dayNumber % count;
-  const [problem] = await ProgrammingProblem.find(studentVisibleProblemFilter(user, {
-    status: 'published',
-    is_deleted: { $ne: true },
-    is_auto_gradable: { $ne: false },
-  }))
-    .sort({ curriculum_order: 1, topic_rank: 1, created_at: 1 })
-    .skip(index)
-    .limit(1);
+  const [problem] = await ProgrammingProblem.findAll({
+    where: studentVisibleProblemWhere(user),
+    order: [
+      ['curriculum_order', 'ASC'],
+      ['topic_rank', 'ASC'],
+      ['created_at', 'ASC'],
+    ],
+    offset: index,
+    limit: 1,
+  });
   return serializeChallenge({ type, title: type === 'weekly' ? 'Weekly Challenge' : 'Daily Challenge' }, problem, solvedSet);
+}
+
+async function fetchProblemsMap(problemIds) {
+  const uniqueIds = [...new Set(problemIds.filter(Boolean))];
+  if (!uniqueIds.length) return new Map();
+  const problems = await ProgrammingProblem.findAll({
+    where: { _id: { [Op.in]: uniqueIds } },
+    attributes: ['_id', 'title', 'difficulty', 'concept'],
+  });
+  return new Map(problems.map((p) => [p._id.toString(), p]));
 }
 
 router.get(
   '/concepts',
   asyncHandler(async (req, res) => {
-    const [result, solvedResult] = await Promise.all([
-      ProgrammingProblem.aggregate([
-        {
-          $match: studentVisibleProblemFilter(req.user, {
-            status: 'published',
-            is_deleted: { $ne: true },
-            is_auto_gradable: { $ne: false },
-          }),
-        },
-        {
-          $group: {
-            _id: '$concept',
-            count: { $sum: 1 },
-            minCurriculumOrder: { $min: '$curriculum_order' },
-            minDifficultyRank: { $min: '$difficulty_rank' },
-          },
-        },
-        { $sort: { minCurriculumOrder: 1, minDifficultyRank: 1, _id: 1 } },
-        {
-          $project: {
-            _id: 0,
-            concept: '$_id',
-            count: 1,
-          },
-        },
-      ]),
-      ProgrammingSubmission.aggregate([
-        {
-          $match: {
-            student_id: req.user._id,
-            status: 'accepted',
-          },
-        },
-        {
-          $group: {
-            _id: '$problem_id',
-          },
-        },
-        {
-          $lookup: {
-            from: 'programmingproblems',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'problem',
-          },
-        },
-        { $unwind: '$problem' },
-        {
-          $match: {
-            'problem.status': 'published',
-            'problem.is_deleted': { $ne: true },
-            'problem.is_auto_gradable': { $ne: false },
-            ...visibleProblemTitleFilter('problem.title'),
-            ...studentProblemPrivacyFilter(req.user, 'problem'),
-          },
-        },
-        {
-          $group: {
-            _id: '$problem.concept',
-            solved: { $sum: 1 },
-          },
-        },
-      ]),
+    const where = studentVisibleProblemWhere(req.user);
+
+    const [result, acceptedSubmissions] = await Promise.all([
+      ProgrammingProblem.findAll({
+        where,
+        attributes: [
+          'concept',
+          [sequelize.fn('COUNT', sequelize.col('_id')), 'count'],
+          [sequelize.fn('MIN', sequelize.col('curriculum_order')), 'minCurriculumOrder'],
+          [sequelize.fn('MIN', sequelize.col('difficulty_rank')), 'minDifficultyRank'],
+        ],
+        group: ['concept'],
+        order: [
+          [sequelize.fn('MIN', sequelize.col('curriculum_order')), 'ASC'],
+          [sequelize.fn('MIN', sequelize.col('difficulty_rank')), 'ASC'],
+          ['concept', 'ASC'],
+        ],
+        raw: true,
+      }),
+      ProgrammingSubmission.findAll({
+        where: { student_id: req.user._id, status: 'accepted' },
+        attributes: ['problem_id'],
+        raw: true,
+      }),
     ]);
+
+    const acceptedProblemIds = [...new Set(acceptedSubmissions.map((s) => s.problem_id))];
+    const acceptedProblems = acceptedProblemIds.length
+      ? await ProgrammingProblem.findAll({
+          where: {
+            _id: { [Op.in]: acceptedProblemIds },
+            ...where,
+          },
+        })
+      : [];
+
+    const solvedByConcept = {};
+    for (const p of acceptedProblems) {
+      solvedByConcept[p.concept] = (solvedByConcept[p.concept] || 0) + 1;
+    }
 
     const concepts = result.map((r) => r.concept);
     const counts = {};
@@ -306,16 +308,13 @@ router.get(
     const progress = {};
 
     result.forEach((r) => {
-      counts[r.concept] = r.count;
-    });
-
-    solvedResult.forEach((r) => {
-      solved_counts[r._id] = r.solved;
+      counts[r.concept] = Number(r.count);
     });
 
     concepts.forEach((concept) => {
       const total = counts[concept] || 0;
-      const solved = solved_counts[concept] || 0;
+      const solved = solvedByConcept[concept] || 0;
+      solved_counts[concept] = solved;
       progress[concept] = total ? Math.round((solved / total) * 100) : 0;
     });
 
@@ -327,58 +326,59 @@ router.get(
   '/problems',
   asyncHandler(async (req, res) => {
     const { difficulty, concept, tag, company, solved, page = 1, limit = 20 } = req.query;
-    const filter = studentVisibleProblemFilter(req.user, {
-      status: 'published',
-      is_deleted: { $ne: true },
-      is_auto_gradable: { $ne: false },
-    });
-    if (difficulty) filter.difficulty = difficulty;
-    if (concept) filter.concept = concept;
-    if (tag) filter.tags = tag;
-    if (company) filter.company_tags = company;
+    const where = studentVisibleProblemWhere(req.user);
+    if (difficulty) where.difficulty = difficulty;
+    if (concept) where.concept = concept;
+    if (tag) where.tags = { [Op.contains]: [tag] };
+    if (company) where.company_tags = { [Op.contains]: [company] };
 
-    const [solvedProblemIds, attemptedProblemIds] = await Promise.all([
-      ProgrammingSubmission.distinct('problem_id', {
-        student_id: req.user._id,
-        status: 'accepted',
+    const [acceptedSubmissions, attemptedSubmissions] = await Promise.all([
+      ProgrammingSubmission.findAll({
+        where: { student_id: req.user._id, status: 'accepted' },
+        attributes: ['problem_id'],
+        raw: true,
       }),
-      ProgrammingSubmission.distinct('problem_id', {
-        student_id: req.user._id,
+      ProgrammingSubmission.findAll({
+        where: { student_id: req.user._id },
+        attributes: ['problem_id'],
+        raw: true,
       }),
     ]);
-    if (solved === 'true') filter._id = { $in: solvedProblemIds };
-    if (solved === 'false') filter._id = { $nin: solvedProblemIds };
+    const solvedProblemIds = [...new Set(acceptedSubmissions.map((s) => s.problem_id))];
+    const attemptedProblemIds = [...new Set(attemptedSubmissions.map((s) => s.problem_id))];
+
+    if (solved === 'true') where._id = { [Op.in]: solvedProblemIds };
+    if (solved === 'false') where._id = { [Op.notIn]: solvedProblemIds };
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
-    const [problems, total, filters] = await Promise.all([
-      ProgrammingProblem.find(filter)
-        .sort({ difficulty_rank: 1, curriculum_order: 1, topic_rank: 1, created_at: 1 })
-        .skip(skip)
-        .limit(limitNum),
-      ProgrammingProblem.countDocuments(filter),
-      ProgrammingProblem.aggregate([
-        {
-          $match: studentVisibleProblemFilter(req.user, {
-            status: 'published',
-            is_deleted: { $ne: true },
-            is_auto_gradable: { $ne: false },
-          }),
-        },
-        {
-          $group: {
-            _id: null,
-            tags: { $addToSet: '$tags' },
-            company_tags: { $addToSet: '$company_tags' },
-          },
-        },
-      ]),
+    const [problems, total] = await Promise.all([
+      ProgrammingProblem.findAll({
+        where,
+        order: [
+          ['difficulty_rank', 'ASC'],
+          ['curriculum_order', 'ASC'],
+          ['topic_rank', 'ASC'],
+          ['created_at', 'ASC'],
+        ],
+        offset: skip,
+        limit: limitNum,
+      }),
+      ProgrammingProblem.count({ where }),
     ]);
+
+    const filterWhere = studentVisibleProblemWhere(req.user);
+    const allFiltered = await ProgrammingProblem.findAll({
+      where: filterWhere,
+      attributes: ['tags', 'company_tags'],
+    });
+    const allTags = [...new Set(allFiltered.flatMap((p) => p.tags || []).filter(Boolean))].sort();
+    const allCompanyTags = [...new Set(allFiltered.flatMap((p) => p.company_tags || []).filter(Boolean))].sort();
+
     const solvedSet = new Set(solvedProblemIds.map((id) => id.toString()));
     const attemptedSet = new Set(attemptedProblemIds.map((id) => id.toString()));
-    const filterMeta = filters[0] || {};
 
     res.json({
       problems: problems.map((problem) => ({
@@ -387,8 +387,8 @@ router.get(
         attempted: attemptedSet.has(problem._id.toString()),
       })),
       filters: {
-        tags: [...new Set((filterMeta.tags || []).flat().filter(Boolean))].sort(),
-        company_tags: [...new Set((filterMeta.company_tags || []).flat().filter(Boolean))].sort(),
+        tags: allTags,
+        company_tags: allCompanyTags,
       },
       pagination: {
         page: pageNum,
@@ -404,25 +404,29 @@ router.get(
   '/problems/:id',
   asyncHandler(async (req, res) => {
     const problem = await getVisibleProblemOrThrow(req.params.id, req.user);
-    const [solved, latestSubmissions] = await Promise.all([
-      ProgrammingSubmission.exists({
-        problem_id: problem._id,
-        student_id: req.user._id,
-        status: 'accepted',
+    const [solvedSubmission, latestSubmissions] = await Promise.all([
+      ProgrammingSubmission.findOne({
+        where: {
+          problem_id: problem._id,
+          student_id: req.user._id,
+          status: 'accepted',
+        },
       }),
-      ProgrammingSubmission.find({
-        problem_id: problem._id,
-        student_id: req.user._id,
-      })
-        .sort({ submitted_at: -1 })
-        .limit(5),
+      ProgrammingSubmission.findAll({
+        where: {
+          problem_id: problem._id,
+          student_id: req.user._id,
+        },
+        order: [['submitted_at', 'DESC']],
+        limit: 5,
+      }),
     ]);
     res.json({
       problem: {
         ...serializeProblemDetail(problem),
-        solved: Boolean(solved),
+        solved: Boolean(solvedSubmission),
         attempted: latestSubmissions.length > 0,
-        latest_submissions: latestSubmissions.map(serializeSubmissionSummary),
+        latest_submissions: latestSubmissions.map((s) => serializeSubmissionSummary(s)),
       },
     });
   }),
@@ -491,15 +495,17 @@ router.get(
   '/problems/:id/submissions',
   asyncHandler(async (req, res) => {
     const problem = await getVisibleProblemOrThrow(req.params.id, req.user);
-    const submissions = await ProgrammingSubmission.find({
-      problem_id: problem._id,
-      student_id: req.user._id,
-    })
-      .sort({ submitted_at: -1 })
-      .limit(30)
-      .populate('problem_id', 'title difficulty concept');
+    const submissions = await ProgrammingSubmission.findAll({
+      where: {
+        problem_id: problem._id,
+        student_id: req.user._id,
+      },
+      order: [['submitted_at', 'DESC']],
+      limit: 30,
+    });
+    const problemsMap = await fetchProblemsMap(submissions.map((s) => s.problem_id));
 
-    res.json({ submissions: submissions.map(serializeSubmissionSummary) });
+    res.json({ submissions: submissions.map((s) => serializeSubmissionSummary(s, problemsMap)) });
   }),
 );
 
@@ -507,7 +513,7 @@ router.get(
   '/problems/:id/editorial',
   asyncHandler(async (req, res) => {
     const problem = await getVisibleProblemOrThrow(req.params.id, req.user);
-    const editorial = await ProgrammingEditorial.findOne({ problem_id: problem._id });
+    const editorial = await ProgrammingEditorial.findOne({ where: { problem_id: problem._id } });
     res.json({ editorial: serializeEditorial(editorial, problem) });
   }),
 );
@@ -517,14 +523,24 @@ router.get(
   asyncHandler(async (req, res) => {
     const problem = await getVisibleProblemOrThrow(req.params.id, req.user);
     const peerIds = await getInstitutionStudentIds(req.user);
-    const discussions = await ProgrammingDiscussion.find({
-      problem_id: problem._id,
-      student_id: { $in: peerIds },
-      is_private: true,
-    })
-      .sort({ created_at: -1 })
-      .limit(50)
-      .populate('student_id', 'name');
+    const discussions = await ProgrammingDiscussion.findAll({
+      where: {
+        problem_id: problem._id,
+        student_id: { [Op.in]: peerIds },
+        is_private: true,
+      },
+      order: [['created_at', 'DESC']],
+      limit: 50,
+    });
+
+    const studentIds = [...new Set(discussions.map((d) => d.student_id))];
+    const students = studentIds.length
+      ? await User.findAll({
+          where: { _id: { [Op.in]: studentIds } },
+          attributes: ['_id', 'name'],
+        })
+      : [];
+    const studentMap = new Map(students.map((s) => [s._id.toString(), s.name]));
 
     res.json({
       discussions: discussions.map((discussion) => ({
@@ -535,9 +551,9 @@ router.get(
         language: discussion.language || '',
         code: discussion.code || '',
         likes: discussion.likes || 0,
-        author_name: discussion.student_id?.name || 'Student',
+        author_name: studentMap.get(discussion.student_id.toString()) || 'Student',
         created_at: discussion.created_at,
-        mine: discussion.student_id?._id?.toString() === req.user._id.toString(),
+        mine: discussion.student_id.toString() === req.user._id.toString(),
       })),
     });
   }),
@@ -593,9 +609,11 @@ router.post(
     }
 
     const existing = await ProgrammingSubmission.findOne({
-      problem_id: problem._id,
-      student_id: req.user._id,
-      status: { $in: ['pending', 'running'] },
+      where: {
+        problem_id: problem._id,
+        student_id: req.user._id,
+        status: { [Op.in]: ['pending', 'running'] },
+      },
     });
     if (existing) throw badRequest('You already have a submission in progress');
 
@@ -611,11 +629,11 @@ router.post(
     try {
       const allTestCases = [
         ...problem.sample_test_cases.map((tc, i) => ({
-          ...tc.toObject(),
+          ...tc,
           is_sample: true,
         })),
         ...problem.hidden_test_cases.map((tc) => ({
-          ...tc.toObject(),
+          ...tc,
           is_sample: false,
         })),
       ];
@@ -634,10 +652,13 @@ router.post(
       submission.execution_time_ms = result.execution_time_ms;
       await submission.save();
 
-      await ProgrammingProblem.findByIdAndUpdate(problem._id, {
-        $inc: { total_submissions: 1 },
-        ...(result.status === 'accepted' ? { total_accepted: 1 } : {}),
-      });
+      await ProgrammingProblem.increment(
+        {
+          total_submissions: 1,
+          ...(result.status === 'accepted' ? { total_accepted: 1 } : {}),
+        },
+        { where: { _id: problem._id } },
+      );
 
       res.json({
         submission: {
@@ -657,8 +678,9 @@ router.post(
       });
     } catch (error) {
       submission.status = 'runtime_error';
-      submission.error_message = error.message;
+      submission.error_message = sanitizeStudentError(error.message, 'runtime_error') || 'something went wrong while execution please try again';
       await submission.save();
+      error.message = submission.error_message;
       throw error;
     }
   }),
@@ -670,26 +692,32 @@ router.get(
     const since = new Date();
     since.setDate(since.getDate() - 180);
 
-    const [submissions, acceptedProblemIds, topicTotals] = await Promise.all([
-      ProgrammingSubmission.find({
-        student_id: req.user._id,
-        submitted_at: { $gte: since },
-      }).select('status submitted_at problem_id'),
-      ProgrammingSubmission.distinct('problem_id', {
-        student_id: req.user._id,
-        status: 'accepted',
-      }),
-      ProgrammingProblem.aggregate([
-        {
-          $match: studentVisibleProblemFilter(req.user, {
-            status: 'published',
-            is_deleted: { $ne: true },
-            is_auto_gradable: { $ne: false },
-          }),
+    const [submissions, acceptedSubmissions, topicTotals] = await Promise.all([
+      ProgrammingSubmission.findAll({
+        where: {
+          student_id: req.user._id,
+          submitted_at: { [Op.gte]: since },
         },
-        { $group: { _id: '$concept', total: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ]),
+        attributes: ['status', 'submitted_at', 'problem_id'],
+      }),
+      ProgrammingSubmission.findAll({
+        where: {
+          student_id: req.user._id,
+          status: 'accepted',
+        },
+        attributes: ['problem_id'],
+        raw: true,
+      }),
+      ProgrammingProblem.findAll({
+        where: studentVisibleProblemWhere(req.user),
+        attributes: [
+          'concept',
+          [sequelize.fn('COUNT', sequelize.col('_id')), 'total'],
+        ],
+        group: ['concept'],
+        order: [['concept', 'ASC']],
+        raw: true,
+      }),
     ]);
 
     const heatmapMap = new Map();
@@ -701,12 +729,16 @@ router.get(
       heatmapMap.set(date, entry);
     }
 
-    const solvedProblems = await ProgrammingProblem.find({
-      _id: { $in: acceptedProblemIds },
-      status: 'published',
-      is_deleted: { $ne: true },
-      is_auto_gradable: { $ne: false },
-    }).select('concept difficulty tags');
+    const acceptedProblemIds = [...new Set(acceptedSubmissions.map((s) => s.problem_id))];
+    const solvedProblems = acceptedProblemIds.length
+      ? await ProgrammingProblem.findAll({
+          where: {
+            _id: { [Op.in]: acceptedProblemIds },
+            ...studentVisibleProblemWhere(req.user),
+          },
+          attributes: ['concept', 'difficulty'],
+        })
+      : [];
     const solvedByTopicMap = new Map();
     const solvedByDifficulty = { Easy: 0, Medium: 0, Hard: 0 };
     for (const problem of solvedProblems) {
@@ -714,7 +746,7 @@ router.get(
       solvedByDifficulty[problem.difficulty] = (solvedByDifficulty[problem.difficulty] || 0) + 1;
     }
 
-    const totalProblems = topicTotals.reduce((sum, item) => sum + item.total, 0);
+    const totalProblems = topicTotals.reduce((sum, item) => sum + Number(item.total), 0);
     const solvedCount = solvedProblems.length;
 
     res.json({
@@ -726,10 +758,10 @@ router.get(
       },
       heatmap: [...heatmapMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
       solved_by_topic: topicTotals.map((item) => ({
-        concept: item._id,
-        solved: solvedByTopicMap.get(item._id) || 0,
-        total: item.total,
-        percent: item.total ? Math.round(((solvedByTopicMap.get(item._id) || 0) / item.total) * 100) : 0,
+        concept: item.concept,
+        solved: solvedByTopicMap.get(item.concept) || 0,
+        total: Number(item.total),
+        percent: Number(item.total) ? Math.round(((solvedByTopicMap.get(item.concept) || 0) / Number(item.total)) * 100) : 0,
       })),
       solved_by_difficulty: solvedByDifficulty,
     });
@@ -740,22 +772,31 @@ router.get(
   '/challenges/current',
   asyncHandler(async (req, res) => {
     const now = new Date();
-    const solvedProblemIds = await ProgrammingSubmission.distinct('problem_id', {
-      student_id: req.user._id,
-      status: 'accepted',
+    const acceptedSubmissions = await ProgrammingSubmission.findAll({
+      where: { student_id: req.user._id, status: 'accepted' },
+      attributes: ['problem_id'],
+      raw: true,
     });
+    const solvedProblemIds = [...new Set(acceptedSubmissions.map((s) => s.problem_id))];
     const solvedSet = new Set(solvedProblemIds.map((id) => id.toString()));
-    const challenges = await ProgrammingChallenge.find({
-      status: 'published',
-      starts_at: { $lte: now },
-      ends_at: { $gte: now },
-    })
-      .sort({ starts_at: -1 })
-      .populate('problem_id');
+    const challenges = await ProgrammingChallenge.findAll({
+      where: {
+        status: 'published',
+        starts_at: { [Op.lte]: now },
+        ends_at: { [Op.gte]: now },
+      },
+      order: [['starts_at', 'DESC']],
+    });
+
+    const challengeProblemIds = [...new Set(challenges.map((c) => c.problem_id).filter(Boolean))];
+    const problems = challengeProblemIds.length
+      ? await ProgrammingProblem.findAll({ where: { _id: { [Op.in]: challengeProblemIds } } })
+      : [];
+    const problemsMap = new Map(problems.map((p) => [p._id.toString(), p]));
 
     const activeByType = {};
     for (const challenge of challenges) {
-      const problem = challenge.problem_id;
+      const problem = problemsMap.get(challenge.problem_id.toString());
       if (activeByType[challenge.type] || !canStudentSeeProblem(problem, req.user)) {
         continue;
       }
@@ -774,10 +815,15 @@ router.get(
   asyncHandler(async (req, res) => {
     const peerIds = await getInstitutionStudentIds(req.user);
     const [students, submissions] = await Promise.all([
-      User.find({ _id: { $in: peerIds } }).select('name email'),
-      ProgrammingSubmission.find({ student_id: { $in: peerIds } })
-        .select('student_id problem_id status execution_time_ms submitted_at')
-        .sort({ submitted_at: -1 }),
+      User.findAll({
+        where: { _id: { [Op.in]: peerIds } },
+        attributes: ['_id', 'name', 'email'],
+      }),
+      ProgrammingSubmission.findAll({
+        where: { student_id: { [Op.in]: peerIds } },
+        attributes: ['student_id', 'problem_id', 'status', 'execution_time_ms', 'submitted_at'],
+        order: [['submitted_at', 'DESC']],
+      }),
     ]);
 
     const stats = new Map();
@@ -831,18 +877,25 @@ router.get(
   '/contests/current',
   asyncHandler(async (req, res) => {
     const now = new Date();
-    const contests = await ProgrammingContest.find({
-      status: 'published',
-      starts_at: { $lte: now },
-      ends_at: { $gte: now },
-      $or: [
-        { institution_id: req.user.assigned_admin || null },
-        { institution_id: null },
-      ],
-    })
-      .sort({ starts_at: -1 })
-      .limit(5)
-      .populate('problem_ids', 'title difficulty concept tags company_tags total_submissions total_accepted sample_test_cases time_limit memory_limit languages');
+    const contests = await ProgrammingContest.findAll({
+      where: {
+        status: 'published',
+        starts_at: { [Op.lte]: now },
+        ends_at: { [Op.gte]: now },
+        [Op.or]: [
+          { institution_id: req.user.assigned_admin || null },
+          { institution_id: null },
+        ],
+      },
+      order: [['starts_at', 'DESC']],
+      limit: 5,
+    });
+
+    const allProblemIds = [...new Set(contests.flatMap((c) => c.problem_ids || []))];
+    const allProblems = allProblemIds.length
+      ? await ProgrammingProblem.findAll({ where: { _id: { [Op.in]: allProblemIds } } })
+      : [];
+    const problemsMap = new Map(allProblems.map((p) => [p._id.toString(), p]));
 
     res.json({
       contests: contests.map((contest) => ({
@@ -852,6 +905,8 @@ router.get(
         starts_at: contest.starts_at,
         ends_at: contest.ends_at,
         problems: (contest.problem_ids || [])
+          .map((pid) => problemsMap.get(pid.toString()))
+          .filter(Boolean)
           .filter((problem) => canStudentSeeProblem(problem, req.user))
           .map(serializeProblem),
       })),
@@ -862,7 +917,7 @@ router.get(
 router.get(
   '/contests/:id/leaderboard',
   asyncHandler(async (req, res) => {
-    const contest = await ProgrammingContest.findById(req.params.id);
+    const contest = await ProgrammingContest.findByPk(req.params.id);
     if (!contest || contest.status !== 'published') throw notFound('Contest not found');
     if (
       contest.institution_id
@@ -873,12 +928,18 @@ router.get(
     }
 
     const peerIds = await getInstitutionStudentIds(req.user);
-    const submissions = await ProgrammingSubmission.find({
-      student_id: { $in: peerIds },
-      problem_id: { $in: contest.problem_ids },
-      submitted_at: { $gte: contest.starts_at, $lte: contest.ends_at },
-    }).select('student_id problem_id status submitted_at');
-    const students = await User.find({ _id: { $in: peerIds } }).select('name email');
+    const submissions = await ProgrammingSubmission.findAll({
+      where: {
+        student_id: { [Op.in]: peerIds },
+        problem_id: { [Op.in]: contest.problem_ids },
+        submitted_at: { [Op.gte]: contest.starts_at, [Op.lte]: contest.ends_at },
+      },
+      attributes: ['student_id', 'problem_id', 'status', 'submitted_at'],
+    });
+    const students = await User.findAll({
+      where: { _id: { [Op.in]: peerIds } },
+      attributes: ['_id', 'name', 'email'],
+    });
     const studentMap = new Map(students.map((student) => [student._id.toString(), student]));
     const stats = new Map();
 
@@ -924,24 +985,26 @@ router.get(
   '/submissions',
   asyncHandler(async (req, res) => {
     const { problem_id, page = 1, limit = 20 } = req.query;
-    const filter = { student_id: req.user._id };
-    if (problem_id) filter.problem_id = problem_id;
+    const where = { student_id: req.user._id };
+    if (problem_id) where.problem_id = problem_id;
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
     const [submissions, total] = await Promise.all([
-      ProgrammingSubmission.find(filter)
-        .sort({ submitted_at: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .populate('problem_id', 'title difficulty concept'),
-      ProgrammingSubmission.countDocuments(filter),
+      ProgrammingSubmission.findAll({
+        where,
+        order: [['submitted_at', 'DESC']],
+        offset: skip,
+        limit: limitNum,
+      }),
+      ProgrammingSubmission.count({ where }),
     ]);
+    const problemsMap = await fetchProblemsMap(submissions.map((s) => s.problem_id));
 
     res.json({
-      submissions: submissions.map(serializeSubmissionSummary),
+      submissions: submissions.map((s) => serializeSubmissionSummary(s, problemsMap)),
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -955,13 +1018,12 @@ router.get(
 router.get(
   '/submissions/:id',
   asyncHandler(async (req, res) => {
-    const submission = await ProgrammingSubmission.findById(req.params.id)
-      .populate('problem_id', 'title difficulty concept sample_test_cases hidden_test_cases time_limit');
+    const submission = await ProgrammingSubmission.findByPk(req.params.id);
 
     if (!submission) throw notFound('Submission not found');
     if (submission.student_id.toString() !== req.user._id.toString()) throw forbidden();
 
-    const problem = submission.problem_id;
+    const problem = await ProgrammingProblem.findByPk(submission.problem_id);
     const totalTestCases = (problem?.sample_test_cases?.length || 0) + (problem?.hidden_test_cases?.length || 0);
 
     res.json({
