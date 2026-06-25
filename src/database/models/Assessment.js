@@ -66,6 +66,16 @@ export const Assessment = sequelize.define('Assessment', {
     type: DataTypes.UUID,
     allowNull: false,
   },
+  target_audience: {
+    type: DataTypes.STRING(20),
+    defaultValue: 'all',
+    allowNull: false,
+  },
+  department_ids: {
+    type: DataTypes.JSONB,
+    defaultValue: null,
+    allowNull: true,
+  },
 }, {
   tableName: 'assessments',
   indexes: [

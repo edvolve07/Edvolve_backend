@@ -53,6 +53,18 @@ function parseAssessmentPayload(body) {
   const generationMode = String(
     body.generation_mode || process.env.AI_DEFAULT_GENERATION_MODE || 'fast',
   ).toLowerCase();
+  const targetAudience = String(body.target_audience || 'all').toLowerCase();
+  let departmentIds = null;
+  if (body.department_ids) {
+    try {
+      departmentIds = typeof body.department_ids === 'string'
+        ? JSON.parse(body.department_ids)
+        : body.department_ids;
+      if (!Array.isArray(departmentIds)) departmentIds = null;
+    } catch {
+      departmentIds = null;
+    }
+  }
 
   const errors = [];
   if (!title) errors.push('Assessment title is required');
@@ -65,6 +77,10 @@ function parseAssessmentPayload(body) {
   if (!STATUSES.includes(status)) errors.push('Invalid status');
   if (!['fast', 'ai'].includes(generationMode)) errors.push('Invalid generation mode');
   if (questionCount < 1) errors.push('Question count must be at least 1');
+  if (!['all', 'department'].includes(targetAudience)) errors.push('Invalid target audience');
+  if (targetAudience === 'department' && (!departmentIds || departmentIds.length === 0)) {
+    errors.push('At least one department must be selected when targeting departments');
+  }
   if (errors.length) throw badRequest('Validation failed', errors);
 
   return {
@@ -80,6 +96,8 @@ function parseAssessmentPayload(body) {
     end_time: toUtcDate(body.end_time),
     question_count: questionCount,
     generation_mode: generationMode,
+    target_audience: targetAudience,
+    department_ids: departmentIds,
   };
 }
 
@@ -160,6 +178,8 @@ async function serializeAssessment(assessment) {
     is_deleted: assessment.is_deleted || false,
     deleted_at: assessment.deleted_at,
     total_questions: totalQuestions,
+    target_audience: assessment.target_audience || 'all',
+    department_ids: assessment.department_ids || null,
     created_at: assessment.created_at,
     updated_at: assessment.updated_at,
   };
@@ -176,12 +196,18 @@ async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
     };
   }
 
+  const studentWhere = {
+    role: ROLES.STUDENT,
+    assigned_admin: admin._id,
+    is_active: { [Op.ne]: false },
+  };
+
+  if (assessment.target_audience === 'department' && Array.isArray(assessment.department_ids) && assessment.department_ids.length) {
+    studentWhere.department_id = { [Op.in]: assessment.department_ids };
+  }
+
   const students = await User.findAll({
-    where: {
-      role: ROLES.STUDENT,
-      assigned_admin: admin._id,
-      is_active: { [Op.ne]: false },
-    },
+    where: studentWhere,
     attributes: ['name', 'email'],
   });
 
@@ -532,6 +558,26 @@ router.get(
         ats_score: resumeVersion.ats_analysis?.ats_score || 0,
         updated_at: resumeVersion.updated_at,
       } : null,
+    });
+  }),
+);
+
+router.get(
+  '/departments',
+  asyncHandler(async (req, res) => {
+    if (!req.user.institutionId) {
+      return res.json({ departments: [] });
+    }
+    const departments = await Department.findAll({
+      where: { institution_id: req.user.institutionId },
+      attributes: ['_id', 'name'],
+      order: [['name', 'ASC']],
+    });
+    res.json({
+      departments: departments.map((d) => ({
+        id: d._id,
+        name: d.name,
+      })),
     });
   }),
 );
@@ -970,6 +1016,8 @@ router.post(
       status: config.status,
       institutionId: req.user.institutionId || undefined,
       created_by: req.user._id,
+      target_audience: config.target_audience,
+      department_ids: config.department_ids,
     });
 
     console.log(`Created assessment ${assessment.start_time} with title "${assessment.title}" and ${validation.questions.length} questions`);
@@ -996,7 +1044,7 @@ router.post(
 router.get(
   '/assessments',
   requireModuleAccess('aptitude'),
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const filter = { is_deleted: { [Op.ne]: true } };
     if (req.user.institutionId) {
       filter.institutionId = req.user.institutionId;
@@ -1023,6 +1071,8 @@ router.post(
       status: config.status,
       institutionId: req.user.institutionId || undefined,
       created_by: req.user._id,
+      target_audience: config.target_audience,
+      department_ids: config.department_ids,
     });
     const emailNotification = assessment.status === 'published'
       ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
@@ -1067,7 +1117,15 @@ router.patch(
       'start_time',
       'end_time',
       'status',
+      'target_audience',
     ];
+
+    if (req.body.department_ids !== undefined) {
+      const ids = Array.isArray(req.body.department_ids)
+        ? req.body.department_ids
+        : [];
+      assessment.department_ids = ids.length ? ids : null;
+    }
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
         if (['start_time', 'end_time'].includes(key)) {

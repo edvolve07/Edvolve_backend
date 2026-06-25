@@ -49,6 +49,8 @@ async function serializeAssessment(assessment) {
     start_time: subtract530(assessment.start_time),
     end_time: subtract530(assessment.end_time),
     total_questions: totalQuestions,
+    target_audience: assessment.target_audience || 'all',
+    department_ids: assessment.department_ids || null,
   };
 }
 function ensureAvailable(assessment) {
@@ -1132,6 +1134,18 @@ router.get(
     if (req.user.institutionId) {
       filter.institutionId = req.user.institutionId;
     }
+
+    if (req.user.department_id) {
+      const deptId = String(req.user.department_id);
+      filter[Op.or] = [
+        { target_audience: { [Op.or]: ['all', null] } },
+        {
+          target_audience: 'department',
+          department_ids: { [Op.contains]: [deptId] },
+        },
+      ];
+    }
+
     const assessments = await Assessment.findAll({ where: filter, order: [['created_at', 'DESC']] });
 
     console.log(`Fetched ${assessments.length} published assessments for student dashboard`);

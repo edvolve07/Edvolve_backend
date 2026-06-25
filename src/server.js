@@ -40,7 +40,7 @@ import { HttpError, asyncHandler } from "./utils/httpError.js";
 import { requireAuth, requireModuleAccess, requireRole } from "./aptitude/middleware/auth.js";
 import { formatDisplayName } from "./aptitude/utils/nameFormat.js";
 import { validateFileType } from "./utils/fileValidation.js";
-import { Op, InterviewSession, InterviewReport, User, AptitudeQuestion, AptitudeResult, syncDatabase } from "./database/index.js";
+import { Op, InterviewSession, InterviewReport, User, AptitudeQuestion, AptitudeResult, getSequelize, syncDatabase } from "./database/index.js";
 
 const app = express();
 const upload = multer({
@@ -824,6 +824,15 @@ async function start() {
   if (!config.isProduction) {
     await syncDatabase({ alter: false });
     console.log('Database tables synced');
+  }
+
+  const sequelize = getSequelize();
+  try {
+    await sequelize.query(`ALTER TABLE assessments ADD COLUMN IF NOT EXISTS target_audience VARCHAR(20) DEFAULT 'all'`);
+    await sequelize.query(`ALTER TABLE assessments ADD COLUMN IF NOT EXISTS department_ids JSONB DEFAULT NULL`);
+    console.log('Assessment schema migration applied');
+  } catch (_err) {
+    console.log('Assessment schema migration skipped (table may not exist yet)');
   }
   const server = app.listen(config.port, "0.0.0.0", () => {
     console.log(`Server running on 0.0.0.0:${config.port}`);
