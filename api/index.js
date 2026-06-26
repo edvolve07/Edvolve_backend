@@ -27,6 +27,7 @@ async function loadServer() {
   return {
     app: serverModule.default,
     connectDatabase: dbModule.connectDatabase,
+    syncDatabase: dbModule.syncDatabase,
   };
 }
 
@@ -39,8 +40,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { app, connectDatabase } = await loadServer();
+    const { app, connectDatabase, syncDatabase } = await loadServer();
     await connectDatabase();
+    await syncDatabase({ alter: false });
     app(req, res);
   } catch (error) {
     console.error('[vercel-handler-error]', error);

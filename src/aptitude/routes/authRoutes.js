@@ -14,7 +14,6 @@ import {
   getPasswordResetBaseUrl,
   isEmailServiceConfigured,
   sendPasswordResetEmail,
-  sendEmailVerificationEmail,
 } from '../../services/emailService.js';
 
 const router = express.Router();
@@ -104,38 +103,19 @@ router.post(
     const existing = await findUserByEmail(normalizedEmail);
     if (existing) throw badRequest('Email is already registered');
 
-    const verificationToken = crypto.randomBytes(32).toString('hex');
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await Admin.create({
       name: name.trim(),
       email: normalizedEmail,
       password_hash: passwordHash,
       role: ROLES.MASTER_ADMIN,
-      email_verification_token: crypto.createHash('sha256').update(verificationToken).digest('hex'),
-      email_verification_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      email_verified: !isEmailServiceConfigured(),
+      email_verified: true,
     });
-
-    if (isEmailServiceConfigured()) {
-      try {
-        const baseUrl = getPasswordResetBaseUrl(req);
-        const verifyUrl = new URL('/verify-email', baseUrl);
-        verifyUrl.searchParams.set('token', verificationToken);
-        verifyUrl.searchParams.set('email', normalizedEmail);
-        await sendEmailVerificationEmail({
-          to: normalizedEmail,
-          name: name.trim(),
-          verifyLink: verifyUrl.toString(),
-        });
-      } catch (emailError) {
-        console.error('[signup] Verification email failed:', emailError.message);
-      }
-    }
 
     res.status(201).json({
       user: toSafeJSON(user),
       token: signToken(user),
-      message: 'Account created. Please verify your email to access all features.',
+      message: 'Account created successfully.',
     });
   }),
 );
@@ -159,11 +139,6 @@ router.post(
         : false;
     if (!valid) throw unauthorized('Invalid email or password');
     if (user.is_active === false) throw locked();
-    if (user.email_verified === false) {
-      throw badRequest('Email not verified. Please check your inbox for the verification link.', [
-        'Contact support if you did not receive a verification email.',
-      ]);
-    }
 
     const configuredRole = roleForEmail(normalizedEmail);
     if (!isBcryptHash) {

@@ -2,6 +2,7 @@ import {
   getSequelize,
   connectDatabase as pgConnect,
   closeDatabase as pgClose,
+  syncDatabase as pgSync,
   InterviewSession,
   InterviewReport,
   AiUsage,
@@ -32,6 +33,10 @@ export function collections() {
     aptitudeResults: AptitudeResult,
     aiUsage: AiUsage,
   };
+}
+
+export async function syncDatabase(options = { alter: false }) {
+  await pgSync(options);
 }
 
 export async function closeDatabase() {
