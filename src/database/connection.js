@@ -16,6 +16,7 @@ export function getSequelize() {
 
     sequelize = new Sequelize(dbUrl, {
       dialect: 'postgres',
+      dialectModule: pg,
       logging: false,
       dialectOptions: isNeon ? {
         ssl: {
