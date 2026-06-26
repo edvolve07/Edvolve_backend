@@ -34,6 +34,9 @@ export const ALLOWED_ORIGINS = [
 export const config = {
   databaseUrl: process.env.DATABASE_URL,
   groqApiKey: process.env.GROQ_API_KEY,
+  nvidiaApiKey: process.env.NVIDIA_NIM_API_KEY,
+  nvidiaBaseUrl: process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1',
+  nvidiaModel: process.env.NVIDIA_NIM_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct',
   port: Number(rootPort || 8000),
   maxQuestions: Number(process.env.MAX_QUESTIONS || 10),
   maxResumeSize: 5 * 1024 * 1024,
@@ -45,4 +48,7 @@ export const config = {
   blobReadWriteToken: process.env.BLOB_READ_WRITE_TOKEN,
   adminEmails: new Set(String(process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)),
   masterAdminEmails: new Set(String(process.env.MASTER_ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)),
+  livekitUrl: process.env.LIVEKIT_URL || 'ws://localhost:7880',
+  livekitApiKey: process.env.LIVEKIT_API_KEY || 'devkey',
+  livekitApiSecret: process.env.LIVEKIT_API_SECRET || 'devsecret',
 };

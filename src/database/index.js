@@ -4,6 +4,10 @@ export { getSequelize, connectDatabase, closeDatabase, syncDatabase } from './co
 
 export { Department } from './models/Department.js';
 export { User } from './models/User.js';
+export { Admin } from './models/Admin.js';
+export { Student } from './models/Student.js';
+export { Admin } from './models/Admin.js';
+export { Student } from './models/Student.js';
 export { Institution } from './models/Institution.js';
 export { Assessment } from './models/Assessment.js';
 export { Question } from './models/Question.js';
@@ -25,6 +29,9 @@ export { ProgrammingAssessmentAnswer } from './models/ProgrammingAssessmentAnswe
 export { AiUsage } from './models/AiUsage.js';
 export { InterviewSession } from './models/InterviewSession.js';
 export { InterviewReport } from './models/InterviewReport.js';
+export { CommunicationSession } from './models/CommunicationSession.js';
+export { CommunicationReport } from './models/CommunicationReport.js';
+export { CommunicationScenario } from './models/CommunicationScenario.js';
 export { AptitudeQuestion, AptitudeResult } from './models/AptitudeQuestion.js';
 
 export const Op = Sequelize.Op;

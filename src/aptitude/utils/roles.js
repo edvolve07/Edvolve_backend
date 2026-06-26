@@ -8,6 +8,7 @@ export const MODULES = {
   AI_INTERVIEW: 'ai_interview',
   APTITUDE: 'aptitude',
   PROGRAMMING: 'programming',
+  COMMUNICATION: 'communication',
   BOTH: 'both',
 };
 

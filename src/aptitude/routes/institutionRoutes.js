@@ -1,6 +1,6 @@
 import express from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { User, Op, Institution, Department, Assessment, AssessmentAttempt, getSequelize } from '../../database/index.js';
+import { Admin, Student, Op, Institution, Department, Assessment, AssessmentAttempt, getSequelize } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, notFound, forbidden } from '../utils/httpError.js';
 import { ROLES } from '../utils/roles.js';
@@ -59,30 +59,32 @@ router.get(
 
     const institutionIds = institutions.map((i) => i._id);
 
-    const counts = institutionIds.length
-      ? await User.findAll({
-          attributes: [
-            'institutionId',
-            'role',
-            [sequelize.fn('COUNT', sequelize.col('_id')), 'count'],
-          ],
-          where: { institutionId: { [Op.in]: institutionIds } },
-          group: ['institutionId', 'role'],
-          raw: true,
-        })
-      : [];
+    const [adminCounts, studentCounts] = await Promise.all([
+      institutionIds.length
+        ? Admin.findAll({
+            attributes: ['institutionId', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
+            where: { institutionId: { [Op.in]: institutionIds } },
+            group: ['institutionId'],
+            raw: true,
+          })
+        : [],
+      institutionIds.length
+        ? Student.findAll({
+            attributes: ['institutionId', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
+            where: { institutionId: { [Op.in]: institutionIds } },
+            group: ['institutionId'],
+            raw: true,
+          })
+        : [],
+    ]);
 
-    const countMap = new Map();
-    for (const c of counts) {
-      const key = c.institutionId;
-      if (!countMap.has(key)) countMap.set(key, {});
-      countMap.get(key)[c.role] = Number(c.count);
-    }
+    const adminCountMap = new Map(adminCounts.map((c) => [c.institutionId, Number(c.count)]));
+    const studentCountMap = new Map(studentCounts.map((c) => [c.institutionId, Number(c.count)]));
 
     const enriched = institutions.map((inst) => ({
       ...serializeInstitution(inst),
-      total_admins: countMap.get(inst._id)?.[ROLES.ADMIN] || 0,
-      total_students: countMap.get(inst._id)?.[ROLES.STUDENT] || 0,
+      total_admins: adminCountMap.get(inst._id) || 0,
+      total_students: studentCountMap.get(inst._id) || 0,
     }));
 
     res.json({ institutions: enriched });
@@ -96,10 +98,10 @@ router.get(
     if (!institution) throw notFound('Institution not found');
 
     const [totalAdmins, totalStudents, admins, departments] = await Promise.all([
-      User.count({ where: { institutionId: institution._id, role: ROLES.ADMIN } }),
-      User.count({ where: { institutionId: institution._id, role: ROLES.STUDENT } }),
-      User.findAll({
-        where: { institutionId: institution._id, role: ROLES.ADMIN },
+      Admin.count({ where: { institutionId: institution._id } }),
+      Student.count({ where: { institutionId: institution._id } }),
+      Admin.findAll({
+        where: { institutionId: institution._id },
         attributes: ['_id', 'name', 'email', 'phone'],
         order: [['name', 'ASC']],
       }),
@@ -203,8 +205,8 @@ router.patch(
     await institution.save();
 
     const [totalAdmins, totalStudents] = await Promise.all([
-      User.count({ where: { institutionId: institution._id, role: ROLES.ADMIN } }),
-      User.count({ where: { institutionId: institution._id, role: ROLES.STUDENT } }),
+      Admin.count({ where: { institutionId: institution._id } }),
+      Student.count({ where: { institutionId: institution._id } }),
     ]);
 
     res.json({
@@ -220,8 +222,8 @@ router.delete(
     if (!institution) throw notFound('Institution not found');
 
     const [adminCount, studentCount] = await Promise.all([
-      User.count({ where: { institutionId: institution._id, role: ROLES.ADMIN } }),
-      User.count({ where: { institutionId: institution._id, role: ROLES.STUDENT } }),
+      Admin.count({ where: { institutionId: institution._id } }),
+      Student.count({ where: { institutionId: institution._id } }),
     ]);
 
     if (adminCount > 0 || studentCount > 0) {
@@ -249,17 +251,17 @@ router.get(
       recentAdmins,
       recentStudents,
     ] = await Promise.all([
-      User.count({ where: { institutionId: institution._id, role: ROLES.ADMIN } }),
-      User.count({ where: { institutionId: institution._id, role: ROLES.STUDENT } }),
+      Admin.count({ where: { institutionId: institution._id } }),
+      Student.count({ where: { institutionId: institution._id } }),
       Assessment.findAll({ where: { institutionId: institution._id }, attributes: ['_id'] }),
-      User.findAll({
-        where: { institutionId: institution._id, role: ROLES.ADMIN },
+      Admin.findAll({
+        where: { institutionId: institution._id },
         attributes: ['_id', 'name', 'email', 'created_at'],
         order: [['created_at', 'DESC']],
         limit: 5,
       }),
-      User.findAll({
-        where: { institutionId: institution._id, role: ROLES.STUDENT },
+      Student.findAll({
+        where: { institutionId: institution._id },
         attributes: ['_id', 'name', 'email', 'created_at'],
         order: [['created_at', 'DESC']],
         limit: 5,
@@ -305,10 +307,9 @@ router.get(
     const institution = await Institution.findByPk(req.params.id);
     if (!institution) throw notFound('Institution not found');
 
-    const admins = await User.findAll({
+    const admins = await Admin.findAll({
       where: {
         institutionId: institution._id,
-        role: ROLES.ADMIN,
       },
       attributes: ['_id', 'name', 'email', 'phone', 'modules_access', 'is_active'],
       order: [['name', 'ASC']],
@@ -340,19 +341,29 @@ router.get(
 
     const deptIds = departments.map((d) => d._id);
 
-    const userCounts = deptIds.length
-      ? await User.findAll({
-          attributes: [
-            'department_id',
-            [sequelize.fn('COUNT', sequelize.col('_id')), 'count'],
-          ],
-          where: { department_id: { [Op.in]: deptIds } },
-          group: ['department_id'],
-          raw: true,
-        })
-      : [];
-
-    const countMap = new Map(userCounts.map((c) => [c.department_id, Number(c.count)]));
+    const [adminDeptCounts, studentDeptCounts] = await Promise.all([
+      deptIds.length
+        ? Admin.findAll({
+            attributes: ['department_id', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
+            where: { department_id: { [Op.in]: deptIds } },
+            group: ['department_id'],
+            raw: true,
+          })
+        : [],
+      deptIds.length
+        ? Student.findAll({
+            attributes: ['department_id', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
+            where: { department_id: { [Op.in]: deptIds } },
+            group: ['department_id'],
+            raw: true,
+          })
+        : [],
+    ]);
+    const countMap = new Map();
+    for (const c of [...adminDeptCounts, ...studentDeptCounts]) {
+      const key = c.department_id;
+      countMap.set(key, (countMap.get(key) || 0) + Number(c.count));
+    }
 
     res.json({
       departments: departments.map((d) => ({
@@ -397,7 +408,11 @@ router.delete(
       throw forbidden('Department does not belong to this institution');
     }
 
-    const userCount = await User.count({ where: { department_id: department._id } });
+    const [adminCount, studentCount] = await Promise.all([
+      Admin.count({ where: { department_id: department._id } }),
+      Student.count({ where: { department_id: department._id } }),
+    ]);
+    const userCount = adminCount + studentCount;
     if (userCount > 0) {
       throw badRequest(
         'Cannot delete department with active users',

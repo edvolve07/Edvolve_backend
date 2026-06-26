@@ -22,6 +22,9 @@ import programmingMasterAdminRoutes from "./programming/routes/masterAdminRoutes
 import assessmentStudentRoutes from "./programming/routes/assessmentStudentRoutes.js";
 import assessmentAdminRoutes from "./programming/routes/assessmentAdminRoutes.js";
 import assessmentMasterAdminRoutes from "./programming/routes/assessmentMasterAdminRoutes.js";
+import communicationStudentRoutes from "./communication/routes/studentRoutes.js";
+import communicationAdminRoutes from "./communication/routes/adminRoutes.js";
+import livekitRoutes from "./livekit/routes.js";
 import { getCodeRunnerHealth } from "./programming/services/executionService.js";
 import { aiService } from "./services/aiService.js";
 import { extractTextFromPdf } from "./services/resumeParser.js";
@@ -40,7 +43,7 @@ import { HttpError, asyncHandler } from "./utils/httpError.js";
 import { requireAuth, requireModuleAccess, requireRole } from "./aptitude/middleware/auth.js";
 import { formatDisplayName } from "./aptitude/utils/nameFormat.js";
 import { validateFileType } from "./utils/fileValidation.js";
-import { Op, InterviewSession, InterviewReport, User, AptitudeQuestion, AptitudeResult, getSequelize, syncDatabase } from "./database/index.js";
+import { Op, InterviewSession, InterviewReport, Admin, Student, AptitudeQuestion, AptitudeResult, getSequelize, syncDatabase } from "./database/index.js";
 
 const app = express();
 const upload = multer({
@@ -92,8 +95,6 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(cookieParser());
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-app.use('/api/aptitude', apiLimiter);
-app.use('/api', apiLimiter);
 
 function pickMetrics(evaluation) {
   return Object.fromEntries(
@@ -241,7 +242,7 @@ app.post("/api/signup", strictLimiter, asyncHandler(async (req, res) => {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   try {
-    const result = await User.create({
+    const result = await Student.create({
       email: normalizedEmail,
       name: displayName,
       password_hash: hash,
@@ -276,7 +277,10 @@ app.post("/api/login", asyncHandler(async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const user = await User.findOne({ where: { email: normalizedEmail } });
+  let user = await Student.findOne({ where: { email: normalizedEmail } });
+  if (!user) {
+    user = await Admin.findOne({ where: { email: normalizedEmail } });
+  }
 
   if (!user) {
     throw new HttpError(401, "Invalid email or password");
@@ -294,10 +298,9 @@ app.post("/api/login", asyncHandler(async (req, res) => {
 
   const authToken = createAuthToken();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  await User.update(
-    { auth_token: authToken, auth_expires_at: expiresAt },
-    { where: { _id: user._id } }
-  );
+  user.auth_token = authToken;
+  user.auth_expires_at = expiresAt;
+  await user.save();
 
   res.json({
     user: {
@@ -318,12 +321,20 @@ app.get("/api/me", asyncHandler(async (req, res) => {
     throw new HttpError(401, "Missing or invalid authorization header");
   }
 
-  const user = await User.findOne({
+  let user = await Student.findOne({
     where: {
       auth_token: token,
       auth_expires_at: { [Op.gt]: new Date() }
     }
   });
+  if (!user) {
+    user = await Admin.findOne({
+      where: {
+        auth_token: token,
+        auth_expires_at: { [Op.gt]: new Date() }
+      }
+    });
+  }
 
   if (!user) {
     throw new HttpError(401, "Invalid or expired auth token");
@@ -788,6 +799,9 @@ app.use("/api/programming/master", programmingMasterAdminRoutes);
 app.use("/api/programming-assessment/student", assessmentStudentRoutes);
 app.use("/api/programming-assessment/admin", assessmentAdminRoutes);
 app.use("/api/programming-assessment/master", assessmentMasterAdminRoutes);
+app.use("/api/communication/student", communicationStudentRoutes);
+app.use("/api/communication/admin", communicationAdminRoutes);
+app.use("/api/livekit", livekitRoutes);
 
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError) {
@@ -833,6 +847,70 @@ async function start() {
     console.log('Assessment schema migration applied');
   } catch (_err) {
     console.log('Assessment schema migration skipped (table may not exist yet)');
+  }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS communication_scenarios (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title VARCHAR(255) NOT NULL,
+        description TEXT DEFAULT '',
+        category VARCHAR(100) DEFAULT '',
+        context TEXT DEFAULT '',
+        difficulty VARCHAR(20) DEFAULT 'Medium',
+        status VARCHAR(20) DEFAULT 'draft',
+        created_by VARCHAR(64) DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS communication_sessions (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id VARCHAR(64) UNIQUE NOT NULL,
+        student_id VARCHAR(64) NOT NULL,
+        student_name VARCHAR(255) DEFAULT '',
+        student_email VARCHAR(255) DEFAULT '',
+        scenario_id VARCHAR(64) DEFAULT '',
+        category VARCHAR(100) DEFAULT '',
+        context TEXT DEFAULT '',
+        history JSONB DEFAULT '[]',
+        current_prompt TEXT DEFAULT '',
+        exchange_count INTEGER DEFAULT 0,
+        max_exchanges INTEGER DEFAULT 6,
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`
+      CREATE INDEX IF NOT EXISTS idx_comm_sessions_student ON communication_sessions (student_id, created_at)
+    `);
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS communication_reports (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id VARCHAR(64) UNIQUE NOT NULL,
+        student_id VARCHAR(64) NOT NULL,
+        student_name VARCHAR(255) DEFAULT '',
+        student_email VARCHAR(255) DEFAULT '',
+        category VARCHAR(100) DEFAULT '',
+        report_id VARCHAR(100) DEFAULT '',
+        generated_date VARCHAR(100) DEFAULT '',
+        overall JSONB DEFAULT '{}',
+        exchange_breakdown JSONB DEFAULT '[]',
+        strengths JSONB DEFAULT '[]',
+        areas_to_improve JSONB DEFAULT '[]',
+        tips JSONB DEFAULT '[]',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`
+      CREATE INDEX IF NOT EXISTS idx_comm_reports_student ON communication_reports (student_id, created_at)
+    `);
+    console.log('Communication module schema migration applied');
+  } catch (_err) {
+    console.log('Communication module schema migration skipped', _err.message);
   }
   const server = app.listen(config.port, "0.0.0.0", () => {
     console.log(`Server running on 0.0.0.0:${config.port}`);

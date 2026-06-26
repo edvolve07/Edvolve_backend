@@ -3,7 +3,8 @@ import crypto from 'node:crypto';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { requireAuth } from '../middleware/auth.js';
-import { User, Op } from '../../database/index.js';
+import { Admin, Student, Op } from '../../database/index.js';
+import { findUserByEmail, findUserByPk } from '../utils/userUtils.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError, badRequest, locked, unauthorized } from '../utils/httpError.js';
 import { normalizeEmail, roleForEmail, ROLES } from '../utils/roles.js';
@@ -100,12 +101,12 @@ router.post(
 
     const normalizedEmail = normalizeEmail(email);
 
-    const existing = await User.findOne({ where: { email: normalizedEmail } });
+    const existing = await findUserByEmail(normalizedEmail);
     if (existing) throw badRequest('Email is already registered');
 
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({
+    const user = await Admin.create({
       name: name.trim(),
       email: normalizedEmail,
       password_hash: passwordHash,
@@ -147,7 +148,7 @@ router.post(
     getJwtSecret();
 
     const normalizedEmail = normalizeEmail(email);
-    const user = await User.findOne({ where: { email: normalizedEmail } });
+    const user = await findUserByEmail(normalizedEmail);
     if (!user) throw unauthorized('Invalid email or password');
 
     const isBcryptHash = String(user.password_hash || '').startsWith('$2');
@@ -193,7 +194,7 @@ router.post(
       ]);
     }
 
-    const user = await User.findOne({ where: { email: normalizedEmail } });
+    const user = await findUserByEmail(normalizedEmail);
     if (!user) {
       res.json(passwordResetResponse());
       return;
@@ -239,12 +240,21 @@ router.post(
     if (password !== confirmPassword) errors.push('Passwords do not match');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const user = await User.findOne({
+    const tokenHash = hashResetToken(token);
+    let user = await Admin.findOne({
       where: {
-        password_reset_token_hash: hashResetToken(token),
+        password_reset_token_hash: tokenHash,
         password_reset_expires_at: { [Op.gt]: new Date() },
       },
     });
+    if (!user) {
+      user = await Student.findOne({
+        where: {
+          password_reset_token_hash: tokenHash,
+          password_reset_expires_at: { [Op.gt]: new Date() },
+        },
+      });
+    }
 
     if (!user) {
       throw badRequest('Reset link is invalid or expired', [
@@ -288,18 +298,16 @@ router.put(
     if (errors.length) throw badRequest('Validation failed', errors);
 
     if (phone) {
-      const existingByPhone = await User.findOne({
-        where: {
-          phone,
-          _id: { [Op.ne]: req.user._id },
-        },
-      });
-      if (existingByPhone) {
+      const [existingAdmin, existingStudent] = await Promise.all([
+        Admin.findOne({ where: { phone, _id: { [Op.ne]: req.user._id } } }),
+        Student.findOne({ where: { phone, _id: { [Op.ne]: req.user._id } } }),
+      ]);
+      if (existingAdmin || existingStudent) {
         throw badRequest('Phone number is already registered', ['Phone number is already registered']);
       }
     }
 
-    const user = await User.findByPk(req.user._id);
+    const user = await findUserByPk(req.user._id);
     if (!user) throw unauthorized('User not found');
 
     user.name = name;
@@ -325,13 +333,23 @@ router.post(
     const email = normalizeEmail(req.body.email);
     if (!token || !email) throw badRequest('Verification token and email are required');
 
-    const user = await User.findOne({
+    const tokenHash = hashResetToken(token);
+    let user = await Admin.findOne({
       where: {
         email,
-        email_verification_token: hashResetToken(token),
+        email_verification_token: tokenHash,
         email_verification_expires_at: { [Op.gt]: new Date() },
       },
     });
+    if (!user) {
+      user = await Student.findOne({
+        where: {
+          email,
+          email_verification_token: tokenHash,
+          email_verification_expires_at: { [Op.gt]: new Date() },
+        },
+      });
+    }
     if (!user) throw badRequest('Verification link is invalid or expired');
 
     user.email_verified = true;
@@ -355,7 +373,7 @@ router.post(
     if (newPassword !== confirmPassword) errors.push('Passwords do not match');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const user = await User.findByPk(req.user._id);
+    const user = await findUserByPk(req.user._id);
     if (!user) throw unauthorized('User not found');
 
     const isBcryptHash = String(user.password_hash || '').startsWith('$2');

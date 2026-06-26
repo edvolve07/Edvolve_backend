@@ -1,7 +1,7 @@
 import express from 'express';
 import { requireAuth, requireModuleAccess, requireRole } from '../../aptitude/middleware/auth.js';
 import { ROLES } from '../../aptitude/utils/roles.js';
-import { ProgrammingAssessment, ProgrammingAssessmentProblem, ProgrammingAssessmentAttempt, ProgrammingAssessmentAnswer, User, Op } from '../../database/index.js';
+import { ProgrammingAssessment, ProgrammingAssessmentProblem, ProgrammingAssessmentAttempt, ProgrammingAssessmentAnswer, Student, Op } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, notFound } from '../utils/httpError.js';
 import { DEFAULT_PRACTICE_LANGUAGES, LANGUAGE_IDS, LANGUAGES } from '../utils/constants.js';
@@ -237,7 +237,7 @@ router.get(
 
     const userIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
     const users = userIds.length > 0
-      ? await User.findAll({
+      ? await Student.findAll({
           where: { _id: { [Op.in]: userIds } },
           attributes: ['_id', 'name', 'email'],
         })
@@ -294,7 +294,7 @@ router.get(
 
     const studentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
     const users = studentIds.length > 0
-      ? await User.findAll({
+      ? await Student.findAll({
           where: { _id: { [Op.in]: studentIds } },
           attributes: ['_id', 'name', 'email'],
         })

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import multer from 'multer';
 import path from 'node:path';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { User, Op, Institution, Department } from '../../database/index.js';
+import { Admin, Student, Op, Institution, Department } from '../../database/index.js';
 import { config } from '../../config.js';
 import { aiService } from '../../services/aiService.js';
 import { summarizeAiUsage } from '../../services/aiUsageService.js';
@@ -262,14 +262,22 @@ router.get(
   '/dashboard',
   asyncHandler(async (_req, res) => {
     const [
-      totalUsers,
+      totalAdmins,
+      totalStudents,
       totalInstitutions,
-      recentUsers,
+      recentAdmins,
+      recentStudents,
     ] = await Promise.all([
-      User.count(),
+      Admin.count(),
+      Student.count(),
       Institution.count(),
-      User.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
+      Admin.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
+      Student.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
     ]);
+    const totalUsers = totalAdmins + totalStudents;
+    const recentUsers = [...recentAdmins, ...recentStudents]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 8);
 
     res.json({
       totals: {
@@ -299,41 +307,44 @@ router.get(
     const role = String(req.query.role || '').trim();
     const query = String(req.query.query || '').trim();
     const adminId = String(req.query.admin_id || '').trim();
-    const filter = {};
-
-    if (role && assignableRoles.has(role)) {
-      filter.role = role;
-    }
-
     const institutionId = String(req.query.institution_id || '').trim();
 
-    if (adminId) {
-      filter.assigned_admin = adminId;
+    let users = [];
+    if (!role || role === 'student') {
+      const studentFilter = {};
+      if (adminId) studentFilter.assigned_admin = adminId;
+      if (institutionId) studentFilter.institutionId = institutionId;
+      if (query) {
+        studentFilter[Op.or] = [
+          { name: { [Op.iLike]: `%${query}%` } },
+          { email: { [Op.iLike]: `%${query}%` } },
+        ];
+      }
+      const students = await Student.findAll({ where: studentFilter, order: [['created_at', 'DESC']], limit });
+      users.push(...students);
     }
-
-    if (institutionId) {
-      filter.institutionId = institutionId;
+    if (!role || role === 'admin' || role === 'master_admin') {
+      const adminFilter = {};
+      if (role && (role === 'admin' || role === 'master_admin')) adminFilter.role = role;
+      if (institutionId) adminFilter.institutionId = institutionId;
+      if (query) {
+        adminFilter[Op.or] = [
+          { name: { [Op.iLike]: `%${query}%` } },
+          { email: { [Op.iLike]: `%${query}%` } },
+        ];
+      }
+      const admins = await Admin.findAll({ where: adminFilter, order: [['created_at', 'DESC']], limit });
+      users.push(...admins);
     }
-
-    if (query) {
-      filter[Op.or] = [
-        { name: { [Op.iLike]: `%${query}%` } },
-        { email: { [Op.iLike]: `%${query}%` } },
-      ];
-    }
-
-    const users = await User.findAll({
-      where: filter,
-      order: [['created_at', 'DESC']],
-      limit,
-    });
+    users.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    users = users.slice(0, limit);
 
     const adminIds = users.map((u) => u.assigned_admin).filter(Boolean);
     const institutionIds = users.map((u) => u.institutionId).filter(Boolean);
 
     const [admins, institutions] = await Promise.all([
       adminIds.length
-        ? User.findAll({ where: { _id: { [Op.in]: adminIds } }, attributes: ['_id', 'name', 'email'], raw: true })
+        ? Admin.findAll({ where: { _id: { [Op.in]: adminIds } }, attributes: ['_id', 'name', 'email'], raw: true })
         : [],
       institutionIds.length
         ? Institution.findAll({ where: { _id: { [Op.in]: institutionIds } }, attributes: ['_id', 'name', 'code'], raw: true })
@@ -369,7 +380,7 @@ router.get(
     if (req.query.institutionId) {
       filter.institutionId = req.query.institutionId;
     }
-    const admins = await User.findAll({
+    const admins = await Admin.findAll({
       where: filter,
       attributes: ['_id', 'name', 'email', 'phone', 'organization', 'modules_access', 'institutionId'],
       order: [['name', 'ASC']],
@@ -439,11 +450,11 @@ router.post(
     }
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await User.findOne({ where: { email } });
+    const existingByEmail = await Admin.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await User.findOne({ where: { phone } });
+      const existingByPhone = await Admin.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
@@ -462,7 +473,7 @@ router.post(
       if (dept) departmentName = dept.name;
     }
 
-    const user = await User.create({
+    const user = await Admin.create({
       name,
       email,
       phone,
@@ -574,7 +585,7 @@ router.post(
         }
       }
 
-      const existingByEmail = await User.findOne({ where: { email } });
+      const existingByEmail = await Admin.findOne({ where: { email } });
       if (existingByEmail) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: email ${email} is already registered`);
@@ -582,7 +593,7 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await User.findOne({ where: { phone } });
+        const existingByPhone = await Admin.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
@@ -594,7 +605,7 @@ router.post(
       const passwordHash = await bcrypt.hash(tempPassword, 10);
 
       try {
-        const user = await User.create({
+        const user = await Admin.create({
           name,
           email,
           phone,
@@ -654,16 +665,16 @@ router.post(
     }
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await User.findOne({ where: { email } });
+    const existingByEmail = await Student.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await User.findOne({ where: { phone } });
+      const existingByPhone = await Student.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
     if (usn) {
-      const existingByUsn = await User.findOne({ where: { usn } });
+      const existingByUsn = await Student.findOne({ where: { usn } });
       if (existingByUsn) throw badRequest('USN is already registered', ['USN is already registered']);
     }
 
@@ -683,7 +694,7 @@ router.post(
     }
 
     if (assignedAdminId) {
-      const admin = await User.findByPk(assignedAdminId);
+      const admin = await Admin.findByPk(assignedAdminId);
       if (!admin || (admin.role !== 'admin' && admin.role !== 'master_admin')) {
         throw badRequest('Assigned admin not found', ['Specified admin does not exist']);
       }
@@ -696,7 +707,7 @@ router.post(
 
     const tempPassword = generateTempPassword(name);
 
-    const user = await User.create({
+    const user = await Student.create({
       name,
       email,
       phone,
@@ -759,7 +770,7 @@ router.post(
     }
 
     if (assignedAdminId) {
-      const admin = await User.findByPk(assignedAdminId);
+      const admin = await Admin.findByPk(assignedAdminId);
       if (!admin || (admin.role !== 'admin' && admin.role !== 'master_admin')) {
         throw badRequest('Assigned admin not found', ['Specified admin does not exist']);
       }
@@ -826,7 +837,7 @@ router.post(
         }
       }
 
-      const existingByEmail = await User.findOne({ where: { email } });
+      const existingByEmail = await Student.findOne({ where: { email } });
       if (existingByEmail) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: email ${email} is already registered`);
@@ -834,7 +845,7 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await User.findOne({ where: { phone } });
+        const existingByPhone = await Student.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
@@ -843,7 +854,7 @@ router.post(
       }
 
       if (usn) {
-        const existingByUsn = await User.findOne({ where: { usn } });
+        const existingByUsn = await Student.findOne({ where: { usn } });
         if (existingByUsn) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: USN ${usn} is already registered`);
@@ -854,7 +865,7 @@ router.post(
       const tempPassword = generateTempPassword(name);
 
       try {
-        const user = await User.create({
+        const user = await Student.create({
           name,
           email,
           phone,

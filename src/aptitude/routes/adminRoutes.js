@@ -3,7 +3,7 @@ import multer from 'multer';
 import PDFDocument from 'pdfkit';
 import XLSX from 'xlsx';
 import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
-import { User, Assessment, AssessmentAttempt, ProctoringEvent, Question, StudentAnswer, StudentCertificate, InterviewReport, ResumeVersion, ProgrammingSubmission, ProgrammingProblem, Department, Op } from '../../database/index.js';
+import { Admin, Student, Assessment, AssessmentAttempt, ProctoringEvent, Question, StudentAnswer, StudentCertificate, InterviewReport, ResumeVersion, ProgrammingSubmission, ProgrammingProblem, Department, Op } from '../../database/index.js';
 import { extractFileText } from '../services/fileTextService.js';
 import { generateAssessmentJson } from '../services/aiService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -197,7 +197,6 @@ async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
   }
 
   const studentWhere = {
-    role: ROLES.STUDENT,
     assigned_admin: admin._id,
     is_active: { [Op.ne]: false },
   };
@@ -206,7 +205,7 @@ async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
     studentWhere.department_id = { [Op.in]: assessment.department_ids };
   }
 
-  const students = await User.findAll({
+  const students = await Student.findAll({
     where: studentWhere,
     attributes: ['name', 'email'],
   });
@@ -247,7 +246,7 @@ async function populateAttempts(attempts) {
   const studentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
   const assessmentIds = [...new Set(attempts.map((a) => a.assessment_id).filter(Boolean))];
   const [students, assessments] = await Promise.all([
-    User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+    Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
     Assessment.findAll({
       where: { _id: { [Op.in]: assessmentIds } },
       attributes: ['_id', 'title', 'concept', 'difficulty', 'total_marks', 'passing_marks', 'duration_minutes'],
@@ -265,8 +264,8 @@ async function populateAttempts(attempts) {
 const YEAR_LABELS = ['1st', '2nd', '3rd', '4th'];
 
 async function getStudentProfile(studentId) {
-  return User.findOne({
-    where: { _id: studentId, role: 'student' },
+  return Student.findOne({
+    where: { _id: studentId },
     attributes: ['_id', 'name', 'email', 'phone', 'usn', 'department_id', 'year', 'modules_access', 'institutionId', 'assigned_admin', 'is_active', 'created_at'],
   });
 }
@@ -328,7 +327,7 @@ router.get(
 
     const isDepartmentAdmin = req.user.admin_role === 'hod' && req.user.department_id;
 
-    const studentWhere = { role: 'student' };
+    const studentWhere = {};
     if (isDepartmentAdmin) {
       studentWhere.department_id = req.user.department_id;
     } else if (req.user.institutionId) {
@@ -337,7 +336,7 @@ router.get(
       studentWhere.assigned_admin = req.user._id;
     }
 
-    const assignedStudents = await User.findAll({
+    const assignedStudents = await Student.findAll({
       where: studentWhere,
       attributes: ['_id', 'name', 'email', 'usn', 'department_id', 'year', 'modules_access', 'is_active'],
     });
@@ -587,8 +586,8 @@ router.get(
   asyncHandler(async (req, res) => {
     const type = String(req.params.type || '');
     const format = String(req.query.format || 'xlsx').toLowerCase();
-    const assignedStudents = await User.findAll({
-      where: { role: 'student', assigned_admin: req.user._id },
+    const assignedStudents = await Student.findAll({
+      where: { assigned_admin: req.user._id },
       attributes: ['_id', 'name', 'email', 'is_active', 'updated_at'],
     });
     const assignedStudentIds = assignedStudents.map((student) => student._id);
@@ -802,7 +801,7 @@ router.patch(
 router.get(
   '/proctoring/events',
   asyncHandler(async (req, res) => {
-    const assignedStudents = await User.findAll({ where: { role: 'student', assigned_admin: req.user._id }, attributes: ['_id'] });
+    const assignedStudents = await Student.findAll({ where: { assigned_admin: req.user._id }, attributes: ['_id'] });
     const studentIds = assignedStudents.map((student) => student._id);
     const events = await ProctoringEvent.findAll({
       where: studentIds.length ? { student_id: { [Op.in]: studentIds } } : { student_id: null },
@@ -811,7 +810,7 @@ router.get(
     });
 
     const uniqueStudentIds = [...new Set(events.map((e) => e.student_id).filter(Boolean))];
-    const students = await User.findAll({
+    const students = await Student.findAll({
       where: { _id: { [Op.in]: uniqueStudentIds } },
       attributes: ['_id', 'name', 'email'],
     });
@@ -838,7 +837,7 @@ router.get(
 router.post(
   '/students/:studentId/certificates/:milestone',
   asyncHandler(async (req, res) => {
-    const student = await User.findOne({ where: { _id: req.params.studentId, role: ROLES.STUDENT, assigned_admin: req.user._id } });
+    const student = await Student.findOne({ where: { _id: req.params.studentId, assigned_admin: req.user._id } });
     if (!student) throw notFound('Student not found');
     const milestone = String(req.params.milestone || '');
     const titles = {
@@ -875,7 +874,7 @@ router.get(
   '/analytics/aptitude',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assignedStudents = await User.findAll({ where: { role: 'student', assigned_admin: req.user._id }, attributes: ['_id'] });
+    const assignedStudents = await Student.findAll({ where: { assigned_admin: req.user._id }, attributes: ['_id'] });
     const assignedStudentIds = assignedStudents.map((s) => s._id);
     const studentFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
 

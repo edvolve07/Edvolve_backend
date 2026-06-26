@@ -2,7 +2,7 @@ import express from 'express';
 import { requireAuth, requireModuleAccess, requireRole } from '../../aptitude/middleware/auth.js';
 import {
   Op,
-  User,
+  Student,
   ProgrammingChallenge,
   ProgrammingContest,
   ProgrammingDiscussion,
@@ -199,9 +199,8 @@ function serializeEditorial(editorial, problem) {
 
 async function getInstitutionStudentIds(user) {
   if (!user.assigned_admin) return [user._id];
-  const peers = await User.findAll({
+  const peers = await Student.findAll({
     where: {
-      role: 'student',
       assigned_admin: user.assigned_admin,
       is_active: { [Op.ne]: false },
     },
@@ -535,7 +534,7 @@ router.get(
 
     const studentIds = [...new Set(discussions.map((d) => d.student_id))];
     const students = studentIds.length
-      ? await User.findAll({
+      ? await Student.findAll({
           where: { _id: { [Op.in]: studentIds } },
           attributes: ['_id', 'name'],
         })
@@ -815,7 +814,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const peerIds = await getInstitutionStudentIds(req.user);
     const [students, submissions] = await Promise.all([
-      User.findAll({
+      Student.findAll({
         where: { _id: { [Op.in]: peerIds } },
         attributes: ['_id', 'name', 'email'],
       }),
@@ -936,7 +935,7 @@ router.get(
       },
       attributes: ['student_id', 'problem_id', 'status', 'submitted_at'],
     });
-    const students = await User.findAll({
+    const students = await Student.findAll({
       where: { _id: { [Op.in]: peerIds } },
       attributes: ['_id', 'name', 'email'],
     });

@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { User, Assessment, Op } from '../../database/index.js';
+import { Admin, Student, Assessment, Op } from '../../database/index.js';
 import { forbidden, locked, unauthorized } from '../utils/httpError.js';
 
 export async function requireAuth(req, _res, next) {
@@ -12,7 +12,10 @@ export async function requireAuth(req, _res, next) {
     }
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findByPk(payload.sub);
+    const user = payload.role === 'student'
+      ? await Student.findByPk(payload.sub)
+      : await Admin.findByPk(payload.sub);
+
     if (!user) {
       throw unauthorized('Invalid session');
     }
@@ -76,7 +79,10 @@ export function requireInstitutionAccess(paramName = 'id') {
           return next();
         }
 
-        const targetUser = await User.findByPk(targetId, { attributes: ['institutionId', 'role'] });
+        let targetUser = await Student.findByPk(targetId, { attributes: ['institutionId', 'role'] });
+        if (!targetUser) {
+          targetUser = await Admin.findByPk(targetId, { attributes: ['institutionId', 'role'] });
+        }
         if (targetUser) {
           if (!targetUser.institutionId || targetUser.institutionId.toString() !== req.user.institutionId.toString()) {
             return next(forbidden('You do not have access to this user'));

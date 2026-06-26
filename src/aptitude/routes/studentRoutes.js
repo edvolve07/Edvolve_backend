@@ -14,6 +14,7 @@ import {
   ProgrammingAssessmentAttempt,
   ProgrammingSubmission,
   InterviewReport,
+  CommunicationReport,
 } from '../../database/index.js';
 import { evaluateAttempt } from '../services/scoringService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -416,6 +417,7 @@ router.get(
     const hasAptitude = userModules.includes('aptitude') || userModules.includes('both');
     const hasInterview = userModules.includes('ai_interview') || userModules.includes('both');
     const hasProgramming = userModules.includes('programming') || userModules.includes('both');
+    const hasCommunication = userModules.includes('communication') || userModules.includes('both');
     const [latestResume, issuedCertificates] = await Promise.all([
       ResumeVersion.findOne({ where: { student_id: req.user._id }, order: [['version', 'DESC']] }),
       StudentCertificate.findAll({ where: { student_id: req.user._id }, order: [['issued_at', 'DESC']] }),
@@ -538,6 +540,23 @@ router.get(
         order: [['created_at', 'DESC']],
         limit: 25,
       });
+    }
+
+    let communicationAnalytics = null;
+    if (hasCommunication) {
+      const commReports = await CommunicationReport.findAll({
+        where: { student_id: req.user._id },
+        attributes: ['overall'],
+      });
+      const percentages = commReports
+        .map((r) => Number(r.overall?.percentage || 0))
+        .filter(Number.isFinite);
+      communicationAnalytics = {
+        total_sessions: commReports.length,
+        average_percentage: percentages.length
+          ? Number((percentages.reduce((s, v) => s + v, 0) / percentages.length).toFixed(2))
+          : 0,
+      };
     }
 
     const attemptAnalytics = attempts
@@ -845,6 +864,7 @@ router.get(
       topic_analytics,
       interview_analytics: interviewAnalytics,
       programming_analytics: programmingAnalytics,
+      communication: communicationAnalytics,
       placement_readiness: readiness,
       learning_path: learningPath,
       certificates: {

@@ -7,7 +7,8 @@ import {
   AiUsage,
   AptitudeQuestion,
   AptitudeResult,
-  User,
+  Admin,
+  Student,
 } from './database/index.js';
 import { config } from "./config.js";
 
@@ -24,7 +25,9 @@ export function collections() {
   return {
     sessions: InterviewSession,
     reports: InterviewReport,
-    users: User,
+    users: null,
+    admins: Admin,
+    students: Student,
     aptitudeQuestions: AptitudeQuestion,
     aptitudeResults: AptitudeResult,
     aiUsage: AiUsage,
