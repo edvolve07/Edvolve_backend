@@ -929,7 +929,7 @@ router.get(
   '/analytics/interviews',
   requireModuleAccess('ai_interview'),
   asyncHandler(async (req, res) => {
-    const assignedStudents = await User.findAll({ where: { role: 'student', assigned_admin: req.user._id }, attributes: ['_id'] });
+    const assignedStudents = await Student.findAll({ where: { assigned_admin: req.user._id }, attributes: ['_id'] });
     const assignedStudentIdStrings = assignedStudents.map((s) => s._id.toString());
     const reportFilter = assignedStudentIdStrings.length ? { student_id: { [Op.in]: assignedStudentIdStrings } } : { student_id: null };
 
@@ -1243,9 +1243,9 @@ router.get(
     }
 
     const studentQueryFilter = req.user.institutionId
-      ? { role: 'student', institutionId: req.user.institutionId }
-      : { role: 'student', assigned_admin: req.user._id };
-    const assignedStudents = await User.findAll({ where: studentQueryFilter, attributes: ['_id'] });
+      ? { institutionId: req.user.institutionId }
+      : { assigned_admin: req.user._id };
+    const assignedStudents = await Student.findAll({ where: studentQueryFilter, attributes: ['_id'] });
     const assignedStudentIds = assignedStudents.map((s) => s._id);
     const attemptFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
 
@@ -1255,7 +1255,7 @@ router.get(
     });
 
     const uniqueStudentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
-    const students = await User.findAll({
+    const students = await Student.findAll({
       where: { _id: { [Op.in]: uniqueStudentIds } },
       attributes: ['_id', 'name', 'email'],
     });
@@ -1296,7 +1296,7 @@ router.patch(
       throw badRequest('Only in-progress attempts can be extended');
     }
 
-    const student = await User.findByPk(attempt.student_id, { attributes: ['name', 'email'] });
+    const student = await Student.findByPk(attempt.student_id, { attributes: ['name', 'email'] });
     attempt.student_id = student || attempt.student_id;
 
     attempt.extra_time_minutes = (attempt.extra_time_minutes || 0) + minutes;

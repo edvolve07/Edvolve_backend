@@ -266,7 +266,7 @@ router.get(
     const problemIds = [...new Set(submissions.map((s) => s.problem_id).filter(Boolean))];
 
     const [students, problems] = await Promise.all([
-      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
 
@@ -369,7 +369,7 @@ router.get(
     const problemIds = [...new Set(recentSubmissions.map((s) => s.problem_id).filter(Boolean))];
 
     const [students, problems] = await Promise.all([
-      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
 

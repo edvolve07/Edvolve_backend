@@ -6,8 +6,6 @@ export { Department } from './models/Department.js';
 export { User } from './models/User.js';
 export { Admin } from './models/Admin.js';
 export { Student } from './models/Student.js';
-export { Admin } from './models/Admin.js';
-export { Student } from './models/Student.js';
 export { Institution } from './models/Institution.js';
 export { Assessment } from './models/Assessment.js';
 export { Question } from './models/Question.js';

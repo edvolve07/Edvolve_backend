@@ -947,16 +947,23 @@ router.post(
     if (phone && !validatePhone(phone)) errors.push('Phone number is invalid');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await User.findOne({ where: { email } });
-    if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
+    const [existingByEmailAdmin, existingByEmailStudent] = await Promise.all([
+      Admin.findOne({ where: { email } }),
+      Student.findOne({ where: { email } }),
+    ]);
+    if (existingByEmailAdmin || existingByEmailStudent) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await User.findOne({ where: { phone } });
-      if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
+      const [existingByPhoneAdmin, existingByPhoneStudent] = await Promise.all([
+        Admin.findOne({ where: { phone } }),
+        Student.findOne({ where: { phone } }),
+      ]);
+      if (existingByPhoneAdmin || existingByPhoneStudent) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
     const effectivePassword = password.length >= 8 ? password : generateTempPassword(name);
-    const user = await User.create({
+    const Model = role === 'student' ? Student : Admin;
+    const user = await Model.create({
       name,
       email,
       phone,
@@ -1053,7 +1060,12 @@ router.post(
         continue;
       }
 
-      const existing = await User.findOne({ where: { email } });
+      let existing = await Admin.findOne({ where: { email } });
+      let existingModel = 'Admin';
+      if (!existing) {
+        existing = await Student.findOne({ where: { email } });
+        existingModel = 'Student';
+      }
       if (existing) {
         if (existing._id === req.user._id && role !== ROLES.MASTER_ADMIN) {
           summary.skipped += 1;
@@ -1073,8 +1085,11 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await User.findOne({ where: { phone } });
-        if (existingByPhone) {
+        const [existingByPhoneAdmin, existingByPhoneStudent] = await Promise.all([
+          Admin.findOne({ where: { phone } }),
+          Student.findOne({ where: { phone } }),
+        ]);
+        if (existingByPhoneAdmin || existingByPhoneStudent) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
           continue;
@@ -1082,7 +1097,8 @@ router.post(
       }
 
       const effectivePassword = password.length >= 8 ? password : generateTempPassword(name);
-      const user = await User.create({
+      const Model = role === 'student' ? Student : Admin;
+      const user = await Model.create({
         name,
         email,
         phone,
@@ -1117,7 +1133,8 @@ router.patch(
       throw forbidden('You cannot remove your own master admin access');
     }
 
-    const user = await User.findByPk(req.params.id);
+    let user = await Admin.findByPk(req.params.id);
+    if (!user) user = await Student.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.role = role;
@@ -1136,16 +1153,17 @@ router.patch(
     const valid = modules.every((m) => MODULE_OPTIONS.includes(m));
     if (!valid) throw badRequest('Invalid module', ['Valid modules: ai_interview, aptitude, programming, both']);
 
-    const user = await User.findByPk(req.params.id);
+    let user = await Admin.findByPk(req.params.id);
+    if (!user) user = await Student.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     const normalizedModules = modules.includes('both') ? ['both'] : modules;
     user.modules_access = normalizedModules;
     await user.save();
 
-    await User.update(
+    await Student.update(
       { modules_access: normalizedModules },
-      { where: { assigned_admin: user._id, role: 'student' } },
+      { where: { assigned_admin: user._id } },
     );
 
     res.json({ user: serializeUser(user) });
@@ -1159,14 +1177,15 @@ router.patch(
       throw forbidden('You cannot revoke your own access');
     }
 
-    const user = await User.findByPk(req.params.id);
+    let user = await Admin.findByPk(req.params.id);
+    if (!user) user = await Student.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.is_active = false;
     await user.save();
 
     if (user.role === ROLES.ADMIN) {
-      await User.update(
+      await Student.update(
         { is_active: false },
         { where: { assigned_admin: user._id } },
       );
@@ -1183,7 +1202,8 @@ router.patch(
       throw forbidden('You cannot restore your own access');
     }
 
-    const user = await User.findByPk(req.params.id);
+    let user = await Admin.findByPk(req.params.id);
+    if (!user) user = await Student.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.is_active = true;
@@ -1200,10 +1220,15 @@ router.delete(
       throw forbidden('You cannot delete your own account');
     }
 
-    const user = await User.findByPk(req.params.id);
+    let user = await Admin.findByPk(req.params.id);
+    if (!user) user = await Student.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
-    await User.destroy({ where: { _id: user._id } });
+    if (user.role === 'student') {
+      await Student.destroy({ where: { _id: user._id } });
+    } else {
+      await Admin.destroy({ where: { _id: user._id } });
+    }
     res.status(204).end();
   }),
 );
