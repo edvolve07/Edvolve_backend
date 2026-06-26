@@ -25,7 +25,7 @@ if (!process.env.ADMIN_EMAILS) {
 }
 
 export const ALLOWED_ORIGINS = [
-  'https://edvolve-seven.vercel.app',
+  'https://edvolve-six.vercel.app',
   process.env.CLIENT_URL,
   'http://localhost:5173',
   'http://localhost:4173',
