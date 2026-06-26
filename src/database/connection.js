@@ -1,4 +1,5 @@
 import { Sequelize } from 'sequelize';
+import pg from 'pg';
 import net from 'node:net';
 import { config } from '../config.js';
 
