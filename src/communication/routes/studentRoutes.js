@@ -94,7 +94,8 @@ router.post('/respond', requireAuth, requireModuleAccess('communication'), async
   if (session.student_id !== req.user._id) throw new HttpError(403, 'Not your session');
   if (session.status !== 'active') throw new HttpError(400, 'Session is already completed');
 
-  const evaluation = await commAi.evaluateResponse(session.current_prompt, answer);
+  const category = session.category || 'General';
+  const evaluation = await commAi.evaluateResponse(session.current_prompt, answer, category);
   const history = session.history || [];
   const exchangeCount = (session.exchange_count || 0) + 1;
   const isLastExchange = exchangeCount >= session.max_exchanges;
@@ -112,6 +113,7 @@ router.post('/respond', requireAuth, requireModuleAccess('communication'), async
     strengths: evaluation.strengths,
     improvements: evaluation.improvements,
     feedback: evaluation.feedback,
+    real_world_tip: evaluation.real_world_tip || '',
   });
 
   const nextPrompt = isLastExchange ? '' : (evaluation.next_prompt || 'Can you tell me more about a specific example from your experience?');
@@ -137,6 +139,7 @@ router.post('/respond', requireAuth, requireModuleAccess('communication'), async
     strengths: evaluation.strengths,
     improvements: evaluation.improvements,
     feedback: evaluation.feedback,
+    real_world_tip: evaluation.real_world_tip || '',
     next_prompt: nextPrompt,
   });
 }));
@@ -163,7 +166,8 @@ router.post('/respond-audio', requireAuth, requireModuleAccess('communication'),
 
   if (!answer) throw new HttpError(400, 'Could not transcribe audio — please try again');
 
-  const evaluation = await commAi.evaluateResponse(session.current_prompt, answer);
+  const category = session.category || 'General';
+  const evaluation = await commAi.evaluateResponse(session.current_prompt, answer, category);
   const history = session.history || [];
   const exchangeCount = (session.exchange_count || 0) + 1;
   const isLastExchange = exchangeCount >= session.max_exchanges;
@@ -181,6 +185,7 @@ router.post('/respond-audio', requireAuth, requireModuleAccess('communication'),
     strengths: evaluation.strengths,
     improvements: evaluation.improvements,
     feedback: evaluation.feedback,
+    real_world_tip: evaluation.real_world_tip || '',
   });
 
   const nextPrompt = isLastExchange ? '' : (evaluation.next_prompt || 'Can you tell me more about a specific example from your experience?');
@@ -239,11 +244,16 @@ router.post('/end', requireAuth, requireModuleAccess('communication'), asyncHand
   if (session.student_id !== req.user._id) throw new HttpError(403, 'Not your session');
 
   const history = session.history || [];
+  const category = session.category || 'General';
   const exchangeBreakdown = history.map((item, index) => ({
     number: index + 1,
     prompt: item.prompt,
     answer: item.answer,
     evaluation: item.evaluation,
+    strengths: item.strengths || [],
+    improvements: item.improvements || [],
+    feedback: item.feedback || '',
+    real_world_tip: item.real_world_tip || '',
   }));
 
   const metricKeys = ['clarity', 'structure', 'conciseness', 'relevance', 'confidence_tone'];
@@ -266,7 +276,16 @@ router.post('/end', requireAuth, requireModuleAccess('communication'), asyncHand
   else if (percentage >= 55) { grade = 'C'; label = 'Average'; }
   else if (percentage >= 40) { grade = 'D'; label = 'Fair'; }
 
-  const summary = await commAi.generateReport(history);
+  const conversation_log = history.map((item, index) => ({
+    exchange: index + 1,
+    interviewer: item.prompt,
+    student: item.answer,
+    scores: item.evaluation || {},
+    feedback: item.feedback || '',
+    real_world_tip: item.real_world_tip || '',
+  }));
+
+  const summary = await commAi.generateReport(history, category);
   const reportId = `CR-${new Date().toISOString().slice(0, 10)}-${uuidv4().slice(0, 3).toUpperCase()}`;
 
   const report = {
@@ -274,7 +293,7 @@ router.post('/end', requireAuth, requireModuleAccess('communication'), asyncHand
     student_id: session.student_id,
     student_name: session.student_name || '',
     student_email: session.student_email || '',
-    category: session.category || '',
+    category,
     report_id: reportId,
     generated_date: new Date().toLocaleDateString('en-US', {
       weekday: 'long', year: 'numeric', month: 'long', day: '2-digit', timeZone: 'UTC',
@@ -288,9 +307,13 @@ router.post('/end', requireAuth, requireModuleAccess('communication'), asyncHand
       metrics: avg,
     },
     exchange_breakdown: exchangeBreakdown,
+    conversation_log,
     strengths: Array.isArray(summary.strengths) ? summary.strengths : [],
     areas_to_improve: Array.isArray(summary.areas_to_improve) ? summary.areas_to_improve : [],
     tips: Array.isArray(summary.tips) ? summary.tips : [],
+    category_insights: summary.category_insights || {},
+    real_world_preparation: Array.isArray(summary.real_world_preparation) ? summary.real_world_preparation : [],
+    competency_analysis: summary.competency_analysis || {},
   };
 
   await CommunicationReport.upsert(report);

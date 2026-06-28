@@ -89,7 +89,7 @@ router.post('/evaluate', asyncHandler(async (req, res) => {
     prompt = scenario.opening;
   }
 
-  const evaluation = await commAi.evaluateResponse(prompt, transcript);
+  const evaluation = await commAi.evaluateResponse(prompt, transcript, category);
   const next_exchange = exchange_count + 1;
   const is_last = next_exchange >= 6;
   const next_prompt = is_last ? '' : (evaluation.next_prompt || 'Can you tell me more about a specific example from your experience?');
@@ -108,6 +108,7 @@ router.post('/evaluate', asyncHandler(async (req, res) => {
     improvements: evaluation.improvements || [],
     next_prompt,
     is_last,
+    real_world_tip: evaluation.real_world_tip || '',
   });
 }));
 

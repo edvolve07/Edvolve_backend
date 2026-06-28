@@ -99,6 +99,33 @@ export function validateQuestions(rawQuestions, defaults = {}) {
   return { valid: errors.length === 0, errors, questions };
 }
 
+export function checkForDuplicateIndices(questions, existingTexts = []) {
+  const normalizedExisting = new Set(
+    existingTexts.map((t) => t.toLowerCase().replace(/\s+/g, ' ').trim()),
+  );
+
+  const duplicateIndices = [];
+  const normalizedSeen = new Set();
+
+  questions.forEach((q, index) => {
+    const normalized = (q.question_text || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) {
+      duplicateIndices.push(index);
+      return;
+    }
+    if (normalizedExisting.has(normalized) || normalizedSeen.has(normalized)) {
+      duplicateIndices.push(index);
+      return;
+    }
+    normalizedSeen.add(normalized);
+  });
+
+  return duplicateIndices;
+}
+
 export function toStudentQuestion(question) {
   return {
     id: question._id.toString(),

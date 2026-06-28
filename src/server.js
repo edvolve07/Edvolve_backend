@@ -908,6 +908,21 @@ async function start() {
     await sequelize.query(`
       CREATE INDEX IF NOT EXISTS idx_comm_reports_student ON communication_reports (student_id, created_at)
     `);
+    // Add new scoring system columns if they don't exist
+    const newColumns = [
+      'conversation_log JSONB DEFAULT \'[]\'',
+      'category_insights JSONB DEFAULT \'{}\'',
+      'real_world_preparation JSONB DEFAULT \'[]\'',
+      'competency_analysis JSONB DEFAULT \'{}\'',
+    ];
+    for (const colDef of newColumns) {
+      const colName = colDef.split(' ')[0];
+      try {
+        await sequelize.query(`ALTER TABLE communication_reports ADD COLUMN IF NOT EXISTS ${colDef}`);
+      } catch (_e) {
+        // column might already exist
+      }
+    }
     console.log('Communication module schema migration applied');
   } catch (_err) {
     console.log('Communication module schema migration skipped', _err.message);

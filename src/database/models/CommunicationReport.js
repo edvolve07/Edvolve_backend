@@ -25,6 +25,10 @@ export const CommunicationReport = sequelize.define('CommunicationReport', {
   strengths: { type: DataTypes.JSONB, defaultValue: [] },
   areas_to_improve: { type: DataTypes.JSONB, defaultValue: [] },
   tips: { type: DataTypes.JSONB, defaultValue: [] },
+  conversation_log: { type: DataTypes.JSONB, defaultValue: [] },
+  category_insights: { type: DataTypes.JSONB, defaultValue: {} },
+  real_world_preparation: { type: DataTypes.JSONB, defaultValue: [] },
+  competency_analysis: { type: DataTypes.JSONB, defaultValue: {} },
 }, {
   tableName: 'communication_reports',
   indexes: [

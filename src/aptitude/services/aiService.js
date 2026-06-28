@@ -3,6 +3,7 @@ import { recordAiUsage } from '../../services/aiUsageService.js';
 import { CONCEPTS } from '../utils/constants.js';
 import { badRequest } from '../utils/httpError.js';
 import { Question, Op } from '../../database/index.js';
+import { checkForDuplicateIndices } from '../utils/questionValidation.js';
 
 function extractJson(text) {
   const trimmed = text.trim();
@@ -614,7 +615,46 @@ export async function generateAssessmentJson(config, fileContext = '') {
   const batches = await runWithConcurrency(jobs, ai.concurrency, (job, index) =>
     generateJobWithRecovery(openai, ai, job, fileContext, index, existingQuestionTexts),
   );
-  const questions = batches.flatMap((batch) => batch.questions || []);
+  let questions = batches.flatMap((batch) => batch.questions || []);
+
+  // Guardrail: automatically detect and replace duplicate questions
+  const MAX_DEDUP_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_DEDUP_RETRIES; attempt++) {
+    const duplicateIndices = checkForDuplicateIndices(questions, existingQuestionTexts);
+    if (duplicateIndices.length === 0) break;
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(
+        `[dedup-guardrail] Found ${duplicateIndices.length} duplicate(s) in generated questions. Regenerating (attempt ${attempt}/${MAX_DEDUP_RETRIES})...`,
+      );
+    }
+
+    const nonDuplicateQuestions = questions.filter((_, i) => !duplicateIndices.includes(i));
+    const nonDuplicateTexts = nonDuplicateQuestions.map((q) => q.question_text);
+    const dedupContext = [...existingQuestionTexts, ...nonDuplicateTexts];
+
+    for (const dupIndex of duplicateIndices) {
+      const replacementJob = { ...config, question_count: 1 };
+      try {
+        const replacement = await generateBatchJson(
+          openai, ai, replacementJob, fileContext,
+          `dedup-${attempt}-${dupIndex}`,
+          dedupContext,
+        );
+        if (replacement?.questions?.length > 0) {
+          questions[dupIndex] = replacement.questions[0];
+        }
+      } catch (error) {
+        // If regeneration fails for a single question, keep the original and continue
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn(
+            `[dedup-guardrail] Failed to regenerate duplicate at index ${dupIndex}:`,
+            getAiErrorMessage(error),
+          );
+        }
+      }
+    }
+  }
 
   return {
     assessment_title: config.title || batches[0]?.assessment_title || '',
