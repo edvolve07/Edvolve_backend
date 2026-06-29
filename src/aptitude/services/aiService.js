@@ -476,15 +476,464 @@ function buildQuestionTemplate(concept, difficulty, index, marks, negative_marks
       }
       break;
     }
-    default: {
-      const a = randomInt(7, 18, seed);
-      const b = randomInt(3, 12, seed + 1);
-      correctValue = a * b;
-      question_text = `If one student solves ${a} questions each hour, how many questions will they solve in ${b} hours?`;
-      explanation = `Step 1: Rate = ${a} questions per hour. ` +
-        `Step 2: Time = ${b} hours. ` +
-        `Step 3: Total = Rate × Time = ${a} × ${b} = ${correctValue}.`;
-      shortcut = `${a} × ${b} = ${correctValue}.`;
+    case 'Mixtures and Allegations': {
+      if (isEasy) {
+        const volA = randomInt(10, 50, seed);
+        const concA = randomInt(10, 30, seed + 1);
+        const volB = randomInt(10, 50, seed + 2);
+        const concB = randomInt(40, 70, seed + 3);
+        const totalVol = volA + volB;
+        correctValue = Math.round((volA * concA + volB * concB) / totalVol);
+        question_text = `${volA} liters of ${concA}% solution is mixed with ${volB} liters of ${concB}% solution. What is the concentration of the mixture?`;
+        explanation = `Step 1: Total volume = ${volA} + ${volB} = ${totalVol} L. ` +
+          `Step 2: Solute in first = ${volA} × ${concA}/100 = ${(volA * concA / 100).toFixed(1)}. ` +
+          `Step 3: Solute in second = ${volB} × ${concB}/100 = ${(volB * concB / 100).toFixed(1)}. ` +
+          `Step 4: Total solute = ${(volA * concA / 100 + volB * concB / 100).toFixed(1)}. ` +
+          `Step 5: Concentration = (Total solute / Total volume) × 100 = ${correctValue}%.`;
+        shortcut = `(${volA}×${concA} + ${volB}×${concB}) / ${totalVol} = ${correctValue}%.`;
+      } else if (isHard) {
+        const initialVol = randomInt(20, 60, seed);
+        const conc = randomInt(20, 40, seed + 1);
+        const replaceVol = randomInt(5, 15, seed + 2);
+        const replacementConc = randomInt(0, 10, seed + 3);
+        const totalSolute = (initialVol - replaceVol) * conc / 100 + replaceVol * replacementConc / 100;
+        correctValue = Math.round(totalSolute / initialVol * 100);
+        question_text = `${initialVol} liters of ${conc}% solution has ${replaceVol} liters replaced with ${replacementConc}% solution. What is the new concentration?`;
+        explanation = `Step 1: Initial solute = ${initialVol} × ${conc}/100 = ${(initialVol * conc / 100).toFixed(1)}. ` +
+          `Step 2: Removed solute = ${replaceVol} × ${conc}/100 = ${(replaceVol * conc / 100).toFixed(1)}. ` +
+          `Step 3: Added solute = ${replaceVol} × ${replacementConc}/100 = ${(replaceVol * replacementConc / 100).toFixed(1)}. ` +
+          `Step 4: New solute = ${(initialVol * conc / 100).toFixed(1)} - ${(replaceVol * conc / 100).toFixed(1)} + ${(replaceVol * replacementConc / 100).toFixed(1)} = ${totalSolute.toFixed(1)}. ` +
+          `Step 5: New concentration = ${totalSolute.toFixed(1)} / ${initialVol} × 100 = ${correctValue}%.`;
+        shortcut = `New conc = (initial solute - removed + added) / total volume × 100.`;
+      } else {
+        const qtyA = randomInt(10, 30, seed);
+        const priceA = randomInt(20, 50, seed + 1);
+        const qtyB = randomInt(10, 30, seed + 2);
+        const priceB = randomInt(60, 100, seed + 3);
+        const totalQty = qtyA + qtyB;
+        correctValue = Math.round((qtyA * priceA + qtyB * priceB) / totalQty);
+        question_text = `${qtyA} kg of tea at ₹${priceA}/kg is mixed with ${qtyB} kg at ₹${priceB}/kg. What is the cost per kg of the mixture?`;
+        explanation = `Step 1: Total weight = ${qtyA} + ${qtyB} = ${totalQty} kg. ` +
+          `Step 2: Total cost = (${qtyA} × ${priceA}) + (${qtyB} × ${priceB}) = ${qtyA * priceA + qtyB * priceB}. ` +
+          `Step 3: Cost per kg = ${qtyA * priceA + qtyB * priceB} / ${totalQty} = ₹${correctValue}.`;
+        shortcut = `Average price = (${qtyA}×${priceA} + ${qtyB}×${priceB}) / ${totalQty} = ₹${correctValue}.`;
+      }
+      break;
+    }
+    case 'Permutation and Combination': {
+      if (isEasy) {
+        const n = randomInt(4, 7, seed);
+        correctValue = n;
+        question_text = `How many ways can ${n} distinct books be arranged on a shelf?`;
+        correctValue = n <= 5 ? [1, 2, 6, 24, 120][n - 1] : n * (n - 1) * (n - 2);
+        explanation = `Step 1: Number of ways to arrange n distinct objects = n!. ` +
+          `Step 2: ${n}! = ${n} × ${n - 1} × ${n - 2}` + (n > 3 ? ` × ${n - 3}` : '') + (n > 4 ? ` × ${n - 4}` : '') + ` = ${correctValue}.`;
+        shortcut = `${n}! = ${correctValue} ways.`;
+      } else if (isHard) {
+        const n = randomInt(5, 7, seed);
+        const r = randomInt(2, 3, seed + 1);
+        correctValue = n;
+        for (let i = 0; i < r; i++) correctValue *= (n - i);
+        correctValue /= [1, 1, 2, 6][r];
+        question_text = `How many ways can a committee of ${r} people be formed from ${n} candidates?`;
+        explanation = `Step 1: Number of combinations = ${n}C${r}. ` +
+          `Step 2: ${n}C${r} = ${n}! / (${r}! × (${n} - ${r})!) = (${n} × ${n - 1}` + (r > 2 ? ` × ${n - 2}` : '') + `) / ${[1, 1, 2, 6][r]}. ` +
+          `Step 3: = ${correctValue} ways.`;
+        shortcut = `Use combination formula: ${n}C${r} = ${correctValue}.`;
+      } else {
+        const n = randomInt(5, 8, seed);
+        const r = randomInt(2, 3, seed + 1);
+        correctValue = n;
+        for (let i = 0; i < r; i++) correctValue *= (n - i);
+        question_text = `How many ways can ${r} prizes be awarded to ${n} students (each gets at most one)?`;
+        explanation = `Step 1: Number of permutations = ${n}P${r}. ` +
+          `Step 2: ${n}P${r} = ${n}! / (${n} - ${r})! = ${n} × ${n - 1}` + (r > 2 ? ` × ${n - 2}` : '') + `. ` +
+          `Step 3: = ${correctValue} ways.`;
+        shortcut = `Use permutation formula: ${n}P${r} = ${correctValue}.`;
+      }
+      break;
+    }
+    case 'Probability': {
+      if (isEasy) {
+        const total = randomInt(6, 12, seed);
+        const favorable = randomInt(2, 5, seed + 1);
+        correctValue = Math.round((favorable / total) * 100);
+        question_text = `A bag has ${total} balls. ${favorable} are red and the rest are blue. What is the probability (in %) of drawing a red ball?`;
+        explanation = `Step 1: Total outcomes = ${total}. Favorable = ${favorable}. ` +
+          `Step 2: Probability = ${favorable} / ${total} = ${(favorable / total).toFixed(3)}. ` +
+          `Step 3: In percentage: ${(favorable / total).toFixed(3)} × 100 = ${correctValue}%.`;
+        shortcut = `P(red) = ${favorable}/${total} = ${correctValue}%.`;
+      } else if (isHard) {
+        const total = randomInt(6, 10, seed);
+        const red = randomInt(2, 4, seed + 1);
+        const blue = randomInt(2, 4, seed + 2);
+        const green = total - red - blue;
+        const p1 = red / total;
+        const p2 = (red - 1) / (total - 1);
+        correctValue = Math.round(p1 * p2 * 100);
+        question_text = `A box has ${red} red, ${blue} blue${green > 0 ? `, ${green} green` : ''} balls. Two balls are drawn without replacement. What is the probability (%) both are red?`;
+        explanation = `Step 1: P(first red) = ${red}/${total} = ${p1.toFixed(3)}. ` +
+          `Step 2: P(second red | first red) = ${red - 1}/${total - 1} = ${p2.toFixed(3)}. ` +
+          `Step 3: P(both red) = ${p1.toFixed(3)} × ${p2.toFixed(3)} = ${(p1 * p2).toFixed(3)} = ${correctValue}%.`;
+        shortcut = `P(both red) = (${red}/${total}) × (${red - 1}/${total - 1}) = ${correctValue}%.`;
+      } else {
+        const total = randomInt(6, 10, seed);
+        const red = randomInt(2, 4, seed + 1);
+        const blue = total - red;
+        const pRed = red / total;
+        const pBlue = blue / total;
+        correctValue = Math.round((pRed + pBlue) * 100);
+        question_text = `A bag has ${red} red and ${blue} blue balls. What is the probability (%) of drawing a red OR a blue ball?`;
+        explanation = `Step 1: P(red) = ${red}/${total}. P(blue) = ${blue}/${total}. ` +
+          `Step 2: P(red or blue) = ${red}/${total} + ${blue}/${total} = ${(red + blue)}/${total} = 1 = ${correctValue}%.`;
+        shortcut = `Since only red and blue exist, probability = 100%.`;
+      }
+      break;
+    }
+    case 'Simple Interest': {
+      if (isEasy) {
+        const p = randomInt(1000, 8000, seed);
+        const r = randomInt(5, 12, seed + 1);
+        const t = randomInt(2, 5, seed + 2);
+        correctValue = Math.round((p * r * t) / 100);
+        question_text = `Find the simple interest on ₹${p} at ${r}% per annum for ${t} years.`;
+        explanation = `Step 1: SI = (P × R × T) / 100 = (${p} × ${r} × ${t}) / 100. ` +
+          `Step 2: = ${p * r * t} / 100 = ₹${correctValue}.`;
+        shortcut = `SI = (${p} × ${r} × ${t}) / 100 = ₹${correctValue}.`;
+      } else if (isHard) {
+        const si = randomInt(500, 2000, seed);
+        const p = randomInt(5000, 15000, seed + 1);
+        const r = randomInt(6, 15, seed + 2);
+        correctValue = Math.round((si * 100) / (p * r));
+        question_text = `The simple interest on a sum is ₹${si} at ${r}% per annum. If the principal is ₹${p}, for how many years was it lent?`;
+        explanation = `Step 1: SI = (P × R × T) / 100 => T = (SI × 100) / (P × R). ` +
+          `Step 2: T = (${si} × 100) / (${p} × ${r}) = ${si * 100} / ${p * r}. ` +
+          `Step 3: T = ${correctValue} years.`;
+        shortcut = `T = (${si} × 100) / (${p} × ${r}) = ${correctValue} years.`;
+      } else {
+        const p = randomInt(2000, 9000, seed);
+        const t = randomInt(2, 4, seed + 1);
+        const amount = randomInt(3000, 12000, seed + 2);
+        const si = amount - p;
+        correctValue = Math.round((si * 100) / (p * t));
+        question_text = `A sum of ₹${p} amounts to ₹${amount} in ${t} years at simple interest. What is the rate of interest?`;
+        explanation = `Step 1: SI = Amount - Principal = ${amount} - ${p} = ${si}. ` +
+          `Step 2: R = (SI × 100) / (P × T) = (${si} × 100) / (${p} × ${t}). ` +
+          `Step 3: R = ${si * 100} / ${p * t} = ${correctValue}%.`;
+        shortcut = `R = (${si} × 100) / (${p} × ${t}) = ${correctValue}%.`;
+      }
+      break;
+    }
+    case 'Compound Interest': {
+      if (isEasy) {
+        const p = randomInt(2000, 8000, seed);
+        const r = randomInt(5, 10, seed + 1);
+        const t = randomInt(2, 3, seed + 2);
+        const amount = Math.round(p * Math.pow((100 + r) / 100, t));
+        correctValue = amount - p;
+        question_text = `Find the compound interest on ₹${p} at ${r}% per annum for ${t} years.`;
+        explanation = `Step 1: A = P(1 + R/100)^T = ${p} × (1 + ${r}/100)^${t}. ` +
+          `Step 2: A = ${p} × ${((100 + r) / 100).toFixed(4)}^${t} = ₹${amount}. ` +
+          `Step 3: CI = A - P = ${amount} - ${p} = ₹${correctValue}.`;
+        shortcut = `CI = P[(1 + R/100)^T - 1] = ${p} × [(${(100 + r) / 100}^${t}) - 1] = ₹${correctValue}.`;
+      } else if (isHard) {
+        const p = randomInt(3000, 10000, seed);
+        const t = randomInt(2, 3, seed + 1);
+        const amount = Math.round(p * Math.pow(1.1, t));
+        const ci = amount - p;
+        correctValue = Math.round((Math.pow(amount / p, 1 / t) - 1) * 100);
+        question_text = `A sum of ₹${p} amounts to ₹${amount} in ${t} years at compound interest. What is the rate of interest?`;
+        explanation = `Step 1: A = P(1 + R/100)^T => (1 + R/100)^${t} = ${amount}/${p} = ${(amount / p).toFixed(4)}. ` +
+          `Step 2: 1 + R/100 = (${(amount / p).toFixed(4)})^(1/${t}) = ${correctValue / 100 + 1}. ` +
+          `Step 3: R = ${correctValue}%.`;
+        shortcut = `R = [(A/P)^(1/T) - 1] × 100 = ${correctValue}%.`;
+      } else {
+        const p = randomInt(5000, 15000, seed);
+        const r = randomInt(8, 12, seed + 1);
+        const t = 2;
+        const n = 2;
+        const amount = Math.round(p * Math.pow(1 + r / (100 * n), n * t));
+        correctValue = amount - p;
+        question_text = `Find the compound interest on ₹${p} at ${r}% per annum compounded half-yearly for ${t} years.`;
+        explanation = `Step 1: A = P(1 + R/(100×n))^(n×T) where n = 2 (half-yearly). ` +
+          `Step 2: A = ${p} × (1 + ${r}/(200))^${n * t} = ${p} × ${(1 + r / 200).toFixed(4)}^${n * t} = ₹${amount}. ` +
+          `Step 3: CI = ${amount} - ${p} = ₹${correctValue}.`;
+        shortcut = `CI = P[(1 + R/200)^${n * t} - 1] = ₹${correctValue}.`;
+      }
+      break;
+    }
+    case 'Data Interpretation': {
+      if (isEasy) {
+        const valA = randomInt(100, 500, seed);
+        const valB = randomInt(100, 500, seed + 1);
+        correctValue = valA + valB;
+        question_text = `A company sold ${valA} units in Q1 and ${valB} units in Q2. What are the total sales?`;
+        explanation = `Step 1: Q1 = ${valA}, Q2 = ${valB}. ` +
+          `Step 2: Total = ${valA} + ${valB} = ${correctValue}.`;
+        shortcut = `${valA} + ${valB} = ${correctValue}.`;
+      } else if (isHard) {
+        const revenue = randomInt(50000, 200000, seed);
+        const cost = randomInt(30000, 100000, seed + 1);
+        const taxRate = randomInt(15, 30, seed + 2);
+        const profit = revenue - cost;
+        const tax = Math.round(profit * taxRate / 100);
+        correctValue = profit - tax;
+        question_text = `A company's revenue is ₹${revenue} and cost is ₹${cost}. Tax rate is ${taxRate}%. What is the net profit after tax?`;
+        explanation = `Step 1: Profit before tax = ${revenue} - ${cost} = ₹${profit}. ` +
+          `Step 2: Tax = ${profit} × ${taxRate}% = ₹${tax}. ` +
+          `Step 3: Net profit = ${profit} - ${tax} = ₹${correctValue}.`;
+        shortcut = `Net profit = (${revenue} - ${cost}) × (100 - ${taxRate})/100 = ₹${correctValue}.`;
+      } else {
+        const q1 = randomInt(200, 600, seed);
+        const q2 = randomInt(250, 700, seed + 1);
+        const q3 = randomInt(300, 800, seed + 2);
+        const avg = Math.round((q1 + q2 + q3) / 3);
+        correctValue = Math.round(((q2 - q1) / q1) * 100);
+        question_text = `Sales were ${q1} in Jan, ${q2} in Feb, ${q3} in Mar. What is the percentage increase from Jan to Feb?`;
+        explanation = `Step 1: Increase = ${q2} - ${q1} = ${q2 - q1}. ` +
+          `Step 2: % Increase = (${q2 - q1} / ${q1}) × 100 = ${((q2 - q1) / q1 * 100).toFixed(1)} = ${correctValue}%.`;
+        shortcut = `% Increase = (${q2} - ${q1}) / ${q1} × 100 = ${correctValue}%.`;
+      }
+      break;
+    }
+    case 'Logical Reasoning': {
+      if (isEasy) {
+        const start = randomInt(2, 10, seed);
+        const diff = randomInt(2, 6, seed + 1);
+        correctValue = start + 4 * diff;
+        question_text = `Find the next number in the series: ${start}, ${start + diff}, ${start + 2 * diff}, ${start + 3 * diff}, ?`;
+        explanation = `Step 1: Common difference = ${start + diff} - ${start} = ${diff}. ` +
+          `Step 2: Next term = ${start + 3 * diff} + ${diff} = ${correctValue}.`;
+        shortcut = `Add ${diff} to the last term: ${start + 3 * diff} + ${diff} = ${correctValue}.`;
+      } else if (isHard) {
+        const a = randomInt(2, 6, seed);
+        const b = randomInt(8, 15, seed + 1);
+        const c = randomInt(3, 7, seed + 2);
+        const d = randomInt(1, 5, seed + 3);
+        const ageA = a * d;
+        const ageB = b + d;
+        correctValue = ageA + ageB;
+        question_text = `A is ${a} times as old as D. B is ${b} years older than D. If D is ${d} years old, what is the sum of ages of A and B?`;
+        explanation = `Step 1: A's age = ${a} × ${d} = ${ageA}. ` +
+          `Step 2: B's age = ${b} + ${d} = ${ageB}. ` +
+          `Step 3: Sum = ${ageA} + ${ageB} = ${correctValue}.`;
+        shortcut = `Sum = (${a} × ${d}) + (${b} + ${d}) = ${correctValue}.`;
+      } else {
+        const aNow = randomInt(20, 40, seed);
+        const bNow = randomInt(5, 15, seed + 1);
+        const years = randomInt(5, 12, seed + 2);
+        correctValue = (aNow + years) - (bNow + years);
+        question_text = `A is ${aNow} years old and B is ${bNow} years old. After ${years} years, what will be the difference in their ages?`;
+        explanation = `Step 1: A's age after ${years} years = ${aNow} + ${years} = ${aNow + years}. ` +
+          `Step 2: B's age after ${years} years = ${bNow} + ${years} = ${bNow + years}. ` +
+          `Step 3: Difference = ${aNow + years} - ${bNow + years} = ${correctValue}.`;
+        shortcut = `Age difference remains constant: ${aNow} - ${bNow} = ${correctValue}.`;
+      }
+      break;
+    }
+    case 'Verbal Ability': {
+      if (isEasy) {
+        const words = ['BEAUTIFUL', 'EDUCATION', 'KNOWLEDGE', 'COMPUTER', 'SCIENCE'];
+        const word = words[seed % words.length];
+        const vowels = word.replace(/[^AEIOU]/g, '').length;
+        correctValue = vowels;
+        question_text = `How many vowels are in the word "${word}"?`;
+        explanation = `Step 1: The word "${word}" has letters: ${word.split('').join(', ')}. ` +
+          `Step 2: Vowels (A, E, I, O, U) found: ${word.replace(/[^AEIOU]/g, word => word + ' ')}. ` +
+          `Step 3: Count = ${correctValue}.`;
+        shortcut = `Count vowels in "${word}" = ${correctValue}.`;
+      } else if (isHard) {
+        const pairs = [
+          { word: 'BRIEF', syn: 'SHORT', ant: 'LONG' },
+          { word: 'ABUNDANT', syn: 'PLENTIFUL', ant: 'SCARCE' },
+          { word: 'FAMOUS', syn: 'RENOWNED', ant: 'OBSCURE' },
+          { word: 'WEALTHY', syn: 'AFFLUENT', ant: 'POOR' },
+        ];
+        const pair = pairs[seed % pairs.length];
+        const alphabetPos = (letter) => letter.charCodeAt(0) - 64;
+        correctValue = alphabetPos(pair.syn[0]) + alphabetPos(pair.ant[0]);
+        question_text = `What is the sum of the alphabetical positions of the first letters of the synonym and antonym of "${pair.word}"?`;
+        explanation = `Step 1: Synonym of "${pair.word}" = "${pair.syn}". First letter = ${pair.syn[0]}. ` +
+          `Step 2: Antonym of "${pair.word}" = "${pair.ant}". First letter = ${pair.ant[0]}. ` +
+          `Step 3: Position of ${pair.syn[0]} = ${alphabetPos(pair.syn[0])}, Position of ${pair.ant[0]} = ${alphabetPos(pair.ant[0])}. ` +
+          `Step 4: Sum = ${alphabetPos(pair.syn[0])} + ${alphabetPos(pair.ant[0])} = ${correctValue}.`;
+        shortcut = `Sum = pos(${pair.syn[0]}) + pos(${pair.ant[0]}) = ${correctValue}.`;
+      } else {
+        const pairs = [
+          { w1: 'HAPPY', w2: 'JOYFUL' },
+          { w1: 'BIG', w2: 'LARGE' },
+          { w1: 'FAST', w2: 'QUICK' },
+          { w1: 'CLEVER', w2: 'INTELLIGENT' },
+          { w1: 'WEAK', w2: 'FRAIL' },
+        ];
+        const pair = pairs[seed % pairs.length];
+        const alphabetPos = (letter) => letter.charCodeAt(0) - 64;
+        const commonLetters = pair.w1.split('').filter(l => pair.w2.includes(l));
+        correctValue = commonLetters.length > 0 ? alphabetPos(commonLetters[0]) : 1;
+        question_text = `Words "${pair.w1}" and "${pair.w2}" are synonyms. What is the alphabetical position of the first common letter between them?`;
+        explanation = `Step 1: Letters in "${pair.w1}": ${pair.w1.split('').join(', ')}. ` +
+          `Step 2: Letters in "${pair.w2}": ${pair.w2.split('').join(', ')}. ` +
+          `Step 3: Common letters: ${commonLetters.join(', ') || 'none'}. ` +
+          `Step 4: First common letter = "${commonLetters[0]}". Position = ${correctValue}.`;
+        shortcut = `Find common letter, then its alphabetical position: ${correctValue}.`;
+      }
+      break;
+    }
+    case 'Coding-Decoding': {
+      if (isEasy) {
+        const word = ['CAT', 'DOG', 'BAT', 'FAN', 'CUP'][seed % 5];
+        const shift = randomInt(1, 3, seed + 1);
+        const coded = word.split('').map(l => String.fromCharCode(l.charCodeAt(0) + shift)).join('');
+        const alphabetPos = (letter) => letter.charCodeAt(0) - 64;
+        correctValue = coded.split('').reduce((s, l) => s + alphabetPos(l), 0);
+        question_text = `If "${word}" is coded as "${coded}" (each letter shifted by ${shift}), what is the sum of alphabetical positions of letters in "${coded}"?`;
+        explanation = `Step 1: Each letter in "${word}" shifted by ${shift}: ` +
+          word.split('').map(l => `${l}→${String.fromCharCode(l.charCodeAt(0) + shift)}`).join(', ') + `. ` +
+          `Step 2: Alphabetical positions: ${coded.split('').map(l => `${l}=${alphabetPos(l)}`).join(', ')}. ` +
+          `Step 3: Sum = ${correctValue}.`;
+        shortcut = `Sum of positions of coded letters = ${correctValue}.`;
+      } else if (isHard) {
+        const words = ['APPLE', 'MANGO', 'GRAPE', 'PEARL'];
+        const word = words[seed % words.length];
+        const code = word.split('').map(l => String.fromCharCode(155 - l.charCodeAt(0))).join('');
+        const alphabetPos = (letter) => letter.charCodeAt(0) - 64;
+        correctValue = code.split('').reduce((s, l) => s + alphabetPos(l), 0);
+        question_text = `In a code, each letter is replaced by its opposite letter (A↔Z, B↔Y, etc.). If "${word}" is coded as "${code}", find the sum of alphabetical positions of the coded letters.`;
+        explanation = `Step 1: Opposite coding: position + opposite position = 27. ` +
+          `Step 2: "${word}" → "${code}" (${word.split('').map((l, i) => `${l}→${code[i]}`).join(', ')}). ` +
+          `Step 3: Positions in code: ${code.split('').map(l => `${l}=${alphabetPos(l)}`).join(', ')}. ` +
+          `Step 4: Sum = ${correctValue}.`;
+        shortcut = `Sum of coded positions = ${correctValue}.`;
+      } else {
+        const word = 'CODE'[seed % 4];
+        const shift = randomInt(1, 4, seed + 1);
+        const coded = String.fromCharCode(word.charCodeAt(0) + shift);
+        const alphabetPos = (letter) => letter.charCodeAt(0) - 64;
+        correctValue = alphabetPos(coded);
+        question_text = `If "${word}" is coded as "${coded}" (each letter shifted by ${shift}), what is the alphabetical position of the coded form of "${word}"?`;
+        explanation = `Step 1: Original letter = "${word}". Shift = ${shift}. ` +
+          `Step 2: Coded letter = "${coded}". ` +
+          `Step 3: Position of "${coded}" = ${correctValue}.`;
+        shortcut = `Position = pos("${word}") + ${shift} = ${alphabetPos(word) + shift} = ${correctValue}.`;
+      }
+      break;
+    }
+    case 'Blood Relations': {
+      if (isEasy) {
+        const ages = [
+          { grandparent: 70, parent: 40, child: 12 },
+          { grandparent: 65, parent: 38, child: 10 },
+          { grandparent: 75, parent: 45, child: 15 },
+        ];
+        const family = ages[seed % ages.length];
+        correctValue = family.grandparent - family.child;
+        question_text = `A grandfather is ${family.grandparent} years old and his grandchild is ${family.child}. What was the grandfather's age when the grandchild was born?`;
+        explanation = `Step 1: Grandfather's age at grandchild's birth = Grandfather's age - Grandchild's age. ` +
+          `Step 2: = ${family.grandparent} - ${family.child} = ${correctValue} years.`;
+        shortcut = `${family.grandparent} - ${family.child} = ${correctValue}.`;
+      } else if (isHard) {
+        const dad = randomInt(35, 50, seed);
+        const son = randomInt(8, 18, seed + 1);
+        const mom = dad - randomInt(2, 6, seed + 2);
+        correctValue = (dad + son) - mom;
+        question_text = `A father is ${dad}, his son is ${son}, and his wife is ${mom} years old. By how many years is the father's age more than the mother's when the son was 5?`;
+        const dadWhenSonWas5 = dad - (son - 5);
+        const momWhenSonWas5 = mom - (son - 5);
+        explanation = `Step 1: When son was 5 (${son - 5} years ago), father was ${dad} - ${son - 5} = ${dadWhenSonWas5}. ` +
+          `Step 2: Mother was ${mom} - ${son - 5} = ${momWhenSonWas5}. ` +
+          `Step 3: Difference = ${dadWhenSonWas5} - ${momWhenSonWas5} = ${correctValue} years.`;
+        shortcut = `Age difference between parents remains constant: ${dad} - ${mom} = ${correctValue}.`;
+      } else {
+        const mom = randomInt(30, 45, seed);
+        const daughter = randomInt(5, 15, seed + 1);
+        const years = randomInt(5, 10, seed + 2);
+        correctValue = (mom + years) / (daughter + years);
+        question_text = `A mother is ${mom} and her daughter is ${daughter}. After ${years} years, what will be the ratio of their ages (mother : daughter)?`;
+        const momFuture = mom + years;
+        const dauFuture = daughter + years;
+        const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+        const divisor = gcd(momFuture, dauFuture);
+        const ratioNum = momFuture / divisor;
+        const ratioDen = dauFuture / divisor;
+        correctValue = Math.round(ratioNum / ratioDen * 10);
+        explanation = `Step 1: Mother's age after ${years} years = ${mom} + ${years} = ${momFuture}. ` +
+          `Step 2: Daughter's age after ${years} years = ${daughter} + ${years} = ${dauFuture}. ` +
+          `Step 3: Ratio = ${momFuture} : ${dauFuture} = ${ratioNum} : ${ratioDen} = ${(ratioNum / ratioDen).toFixed(1)}.`;
+        shortcut = `Ratio = (${mom} + ${years}) / (${daughter} + ${years}) = ${(ratioNum / ratioDen).toFixed(1)}.`;
+      }
+      break;
+    }
+    case 'Seating Arrangement': {
+      if (isEasy) {
+        const total = randomInt(8, 15, seed);
+        const positionFromLeft = randomInt(2, total - 1, seed + 1);
+        correctValue = total - positionFromLeft + 1;
+        question_text = `In a row of ${total} students, X is ${positionFromLeft}th from the left. What is X's position from the right?`;
+        explanation = `Step 1: Total students = ${total}. Position from left = ${positionFromLeft}. ` +
+          `Step 2: Position from right = Total - Position from left + 1 = ${total} - ${positionFromLeft} + 1 = ${correctValue}.`;
+        shortcut = `Right position = ${total} - ${positionFromLeft} + 1 = ${correctValue}.`;
+      } else if (isHard) {
+        const total = randomInt(10, 18, seed);
+        const aFromLeft = randomInt(3, 6, seed + 1);
+        const bFromRight = randomInt(3, 6, seed + 2);
+        const between = randomInt(2, 5, seed + 3);
+        correctValue = aFromLeft + between + bFromRight;
+        question_text = `In a row of ${total} people, A is ${aFromLeft}th from left and B is ${bFromRight}th from right. There are ${between} people between A and B. What is the total number of people counted from A's left to B's right?`;
+        explanation = `Step 1: People from left end to A = ${aFromLeft}. ` +
+          `Step 2: People between A and B = ${between}. ` +
+          `Step 3: People from B to right end = ${bFromRight}. ` +
+          `Step 4: Total covered = ${aFromLeft} + ${between} + ${bFromRight} = ${correctValue}.`;
+        shortcut = `Total = ${aFromLeft} + ${between} + ${bFromRight} = ${correctValue}.`;
+      } else {
+        const total = randomInt(8, 12, seed);
+        const aFromLeft = randomInt(3, total - 2, seed + 1);
+        const bFromRight = randomInt(3, total - 2, seed + 2);
+        const overlap = aFromLeft + bFromRight - total;
+        correctValue = overlap > 0 ? overlap : 0;
+        question_text = `In a row of ${total} persons, A is ${aFromLeft}th from left and B is ${bFromRight}th from right. How many persons are there between A and B?`;
+        explanation = `Step 1: If overlapping, persons between = position from left + position from right - total - 2. ` +
+          `Step 2: = ${aFromLeft} + ${bFromRight} - ${total} - 2 = ${correctValue}.` +
+          (correctValue <= 0 ? ` Since this is ≤ 0, no one is between them.` : ` There are ${correctValue} persons between A and B.`);
+        shortcut = `Between = ${aFromLeft} + ${bFromRight} - ${total} - 2 = ${correctValue}.`;
+      }
+      break;
+    }
+    case 'Puzzles': {
+      if (isEasy) {
+        const a = randomInt(1, 9, seed);
+        const b = randomInt(1, 9, seed + 1);
+        correctValue = a * 10 + b;
+        question_text = `If a 2-digit number has ${a} in the tens place and ${b} in the units place, what is the number?`;
+        explanation = `Step 1: Tens digit = ${a}, Units digit = ${b}. ` +
+          `Step 2: Number = ${a} × 10 + ${b} = ${correctValue}.`;
+        shortcut = `${a} × 10 + ${b} = ${correctValue}.`;
+      } else if (isHard) {
+        const a = randomInt(2, 8, seed);
+        const b = randomInt(1, 9, seed + 1);
+        const sum = a + b;
+        const product = a * b;
+        const discriminant = sum * sum - 4 * product;
+        const root1 = Math.round((sum + Math.sqrt(discriminant)) / 2);
+        correctValue = root1;
+        question_text = `The sum of two numbers is ${sum} and their product is ${product}. What is the larger number?`;
+        explanation = `Step 1: Let numbers be x and y. x + y = ${sum}, xy = ${product}. ` +
+          `Step 2: Quadratic: t² - ${sum}t + ${product} = 0. ` +
+          `Step 3: Roots = [${sum} ± √(${sum * sum} - ${4 * product})] / 2 = [${sum} ± ${Math.sqrt(discriminant).toFixed(1)}] / 2. ` +
+          `Step 4: Numbers are ${Math.round((sum - Math.sqrt(discriminant)) / 2)} and ${Math.round((sum + Math.sqrt(discriminant)) / 2)}. Larger = ${correctValue}.`;
+        shortcut = `Larger = (${sum} + √(${sum * sum} - ${4 * product})) / 2 = ${correctValue}.`;
+      } else {
+        const d1 = randomInt(1, 4, seed);
+        const d2 = randomInt(1, 4, seed + 1);
+        const d3 = randomInt(0, 9, seed + 2);
+        const num = d1 * 100 + d2 * 10 + d3;
+        const reversed = d3 * 100 + d2 * 10 + d1;
+        correctValue = Math.abs(num - reversed);
+        question_text = `The digits of ${num} are reversed. What is the positive difference between the original and reversed number?`;
+        explanation = `Step 1: Original = ${num}. ` +
+          `Step 2: Reversed = ${reversed}. ` +
+          `Step 3: Difference = |${num} - ${reversed}| = ${correctValue}.`;
+        shortcut = `Difference = ${num} - ${reversed} = ${correctValue}.`;
+      }
       break;
     }
   }
