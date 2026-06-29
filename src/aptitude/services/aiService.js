@@ -50,8 +50,9 @@ Requirements:
 * Each question must contain exactly 4 options:
   A, B, C, D
 * Only one correct answer
+* CRITICAL — DIVERSITY RULE: Every question must have a completely unique question structure and text. Do NOT reuse the same sentence pattern across multiple questions (e.g., avoid multiple "The average of X numbers is Y. What is the sum?" style questions). Vary the framing, the unknown variable, the scenario, and the wording for each question.
 * Every question MUST have a unique question_text — do NOT repeat, rephrase, or generate the same scenario as any other question in this output or the existing list above
-* Use different numerical values, different contexts, and different scenarios for every question
+* Use different numerical values, different contexts, different scenarios, and different sentence structures for every question
 * Include a detailed, step-by-step explanation (3-6 sentences minimum) that shows:
   - The formula or concept used
   - Each step of the calculation with intermediate values
@@ -452,9 +453,9 @@ function buildGenerationJobs(config, batchSize) {
 
 async function generateBatchJson(openai, ai, config, fileContext, batchLabel, existingQuestionTexts = []) {
   const prompt = `${buildPrompt(config, fileContext, existingQuestionTexts)}
-
+ 
 Batch instruction:
-Generate batch ${batchLabel}. Every question must be different from every other batch and from the existing list above. Use unique numerical values, wording, and scenarios — never reuse a question_text. Return exactly ${config.question_count} questions.`;
+Generate batch ${batchLabel}. Every question must be different from every other batch and from the existing list above. Use unique numerical values, wording, scenarios, AND sentence structures — never reuse a question_text or question pattern. Return exactly ${config.question_count} questions.`;
 
   const request = {
     model: ai.model,
@@ -617,44 +618,40 @@ export async function generateAssessmentJson(config, fileContext = '') {
   );
   let questions = batches.flatMap((batch) => batch.questions || []);
 
-  // Guardrail: automatically detect and replace duplicate questions
-  const MAX_DEDUP_RETRIES = 3;
-  for (let attempt = 1; attempt <= MAX_DEDUP_RETRIES; attempt++) {
-    const duplicateIndices = checkForDuplicateIndices(questions, existingQuestionTexts);
-    if (duplicateIndices.length === 0) break;
+  // Enhanced dedup: remove duplicates and re-prompt for missing count
+  const TARGET_COUNT = config.question_count;
+  let dedupContext = [...existingQuestionTexts];
+  let uniqueQuestions = [];
+  const MAX_ROUNDS = 10;
+
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    const seen = new Set(dedupContext.map((t) => t.toLowerCase().replace(/\s+/g, ' ').trim()));
+
+    for (const q of questions) {
+      const normalized = (q.question_text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      uniqueQuestions.push(q);
+      dedupContext.push(q.question_text);
+    }
+
+    if (uniqueQuestions.length >= TARGET_COUNT) break;
 
     if (process.env.NODE_ENV !== 'production') {
       console.warn(
-        `[dedup-guardrail] Found ${duplicateIndices.length} duplicate(s) in generated questions. Regenerating (attempt ${attempt}/${MAX_DEDUP_RETRIES})...`,
+        `[dedup-guardrail] Round ${round}/${MAX_ROUNDS}: Have ${uniqueQuestions.length}/${TARGET_COUNT} unique questions. Generating ${TARGET_COUNT - uniqueQuestions.length} more...`,
       );
     }
 
-    const nonDuplicateQuestions = questions.filter((_, i) => !duplicateIndices.includes(i));
-    const nonDuplicateTexts = nonDuplicateQuestions.map((q) => q.question_text);
-    const dedupContext = [...existingQuestionTexts, ...nonDuplicateTexts];
-
-    for (const dupIndex of duplicateIndices) {
-      const replacementJob = { ...config, question_count: 1 };
-      try {
-        const replacement = await generateBatchJson(
-          openai, ai, replacementJob, fileContext,
-          `dedup-${attempt}-${dupIndex}`,
-          dedupContext,
-        );
-        if (replacement?.questions?.length > 0) {
-          questions[dupIndex] = replacement.questions[0];
-        }
-      } catch (error) {
-        // If regeneration fails for a single question, keep the original and continue
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn(
-            `[dedup-guardrail] Failed to regenerate duplicate at index ${dupIndex}:`,
-            getAiErrorMessage(error),
-          );
-        }
-      }
-    }
+    const remaining = TARGET_COUNT - uniqueQuestions.length;
+    const refillJobs = buildGenerationJobs({ ...config, question_count: remaining }, ai.batchSize);
+    const refillBatches = await runWithConcurrency(refillJobs, ai.concurrency, (job, index) =>
+      generateJobWithRecovery(openai, ai, job, fileContext, `refill-${round}-${index}`, dedupContext),
+    );
+    questions = refillBatches.flatMap((batch) => batch.questions || []);
   }
+
+  questions = uniqueQuestions.slice(0, TARGET_COUNT);
 
   return {
     assessment_title: config.title || batches[0]?.assessment_title || '',
