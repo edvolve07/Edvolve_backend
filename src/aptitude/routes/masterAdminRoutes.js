@@ -1,15 +1,13 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import express from 'express';
-import fs from 'node:fs/promises';
 import multer from 'multer';
-import path from 'node:path';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { Admin, Student, Op, Institution, Department } from '../../database/index.js';
 import { config } from '../../config.js';
 import { aiService } from '../../services/aiService.js';
 import { summarizeAiUsage } from '../../services/aiUsageService.js';
-import { transcriber } from '../../services/transcriber.js';
+import { updateApiKeyInDb, getProviders, getProviderById } from '../../services/apiKeyService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, forbidden, locked, notFound } from '../utils/httpError.js';
 import { MODULE_OPTIONS, normalizeEmail, ROLES, roleLabel } from '../utils/roles.js';
@@ -136,42 +134,15 @@ function serializeProvider(provider) {
   };
 }
 
-function escapeEnvValue(value) {
-  const text = String(value || '');
-  if (!/[#\s"'\\]/.test(text)) return text;
-  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-async function writeEnvValue(key, value) {
-  const envPath = path.join(process.cwd(), '.env');
-  let content = '';
-
+async function refreshRuntimeProvider(provider, apiKey) {
   try {
-    content = await fs.readFile(envPath, 'utf8');
+    await updateApiKeyInDb(provider.id, apiKey, "master_admin");
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-
-  const nextLine = `${key}=${escapeEnvValue(value)}`;
-  const lines = content.split(/\r?\n/);
-  const index = lines.findIndex((line) => line.trim().startsWith(`${key}=`));
-
-  if (index >= 0) {
-    lines[index] = nextLine;
-  } else {
-    if (lines.length && lines[lines.length - 1].trim()) lines.push('');
-    lines.push(nextLine);
-  }
-
-  await fs.writeFile(envPath, `${lines.join('\n').replace(/\n+$/, '')}\n`);
-}
-
-function refreshRuntimeProvider(provider, apiKey) {
-  process.env[provider.envKey] = apiKey;
-  if (provider.id === 'groq') {
-    config.groqApiKeys = String(apiKey || '').split(',').map(s => s.trim()).filter(Boolean);
-    aiService.rebuildClients();
-    transcriber.setApiKey(apiKey);
+    process.env[provider.envKey] = apiKey;
+    if (provider.id === 'groq') {
+      config.groqApiKeys = String(apiKey || '').split(',').map(s => s.trim()).filter(Boolean);
+      aiService.rebuildClients();
+    }
   }
 }
 
@@ -920,8 +891,7 @@ router.patch(
       throw badRequest('API key is too short', ['API key must be at least 8 characters']);
     }
 
-    await writeEnvValue(provider.envKey, apiKey);
-    refreshRuntimeProvider(provider, apiKey);
+    await refreshRuntimeProvider(provider, apiKey);
 
     res.json({ provider: serializeProvider(provider) });
   }),

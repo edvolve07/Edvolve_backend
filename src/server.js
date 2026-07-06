@@ -913,6 +913,31 @@ async function start() {
   } catch (_err) {
     console.log('Communication module schema migration skipped', _err.message);
   }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS api_keys (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        provider VARCHAR(50) NOT NULL UNIQUE,
+        api_key TEXT NOT NULL,
+        updated_by VARCHAR(255) DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log('API keys table ready');
+  } catch (_err) {
+    console.log('API keys table migration skipped', _err.message);
+  }
+
+  try {
+    const { loadApiKeysFromDb } = await import("./services/apiKeyService.js");
+    await loadApiKeysFromDb();
+    console.log('API keys loaded from database');
+  } catch (_err) {
+    console.log('API keys load skipped, using env vars:', _err.message);
+  }
+
   const server = app.listen(config.port, "0.0.0.0", () => {
     console.log(`Server running on 0.0.0.0:${config.port}`);
   });

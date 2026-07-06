@@ -25,6 +25,7 @@ export { ProgrammingAssessmentProblem } from './models/ProgrammingAssessmentProb
 export { ProgrammingAssessmentAttempt } from './models/ProgrammingAssessmentAttempt.js';
 export { ProgrammingAssessmentAnswer } from './models/ProgrammingAssessmentAnswer.js';
 export { AiUsage } from './models/AiUsage.js';
+export { ApiKey } from './models/ApiKey.js';
 export { InterviewSession } from './models/InterviewSession.js';
 export { InterviewReport } from './models/InterviewReport.js';
 export { CommunicationSession } from './models/CommunicationSession.js';
