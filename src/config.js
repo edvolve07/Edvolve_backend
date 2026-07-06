@@ -27,7 +27,7 @@ if (!process.env.ADMIN_EMAILS) {
 const clientUrls = (process.env.CLIENT_URL || '').split(',').map(s => s.trim()).filter(Boolean);
 
 export const ALLOWED_ORIGINS = [
-  'https://edvolve-six.vercel.app',
+  'https://app.edvols.in',
   ...clientUrls,
   'http://localhost:5173',
   'http://localhost:4173',
