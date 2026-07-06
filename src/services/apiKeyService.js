@@ -36,7 +36,7 @@ const PROVIDERS = {
   },
 };
 
-let providerById = new Map(PROVIDERS.entries());
+let providerById = new Map(Object.entries(PROVIDERS));
 
 function maskSecret(value) {
   if (!value) return null;
