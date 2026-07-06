@@ -407,7 +407,7 @@ export async function getJudge0ExecutionHealth() {
 
   try {
     const result = await createSubmission({
-      code: 'print("edvolve")',
+      code: 'print("edvols")',
       languageId: DEFAULT_LANGUAGE_IDS.python,
       input: '',
       timeLimit: 2,
@@ -417,7 +417,7 @@ export async function getJudge0ExecutionHealth() {
 
     const stdout = normalizeOutput(decode(result.stdout));
     const message = decode(result.message);
-    const healthy = result.status?.id === 3 && stdout === 'edvolve';
+    const healthy = result.status?.id === 3 && stdout === 'edvols';
 
     return {
       ...base,

@@ -672,7 +672,7 @@ async function seedProblems() {
     const hashed = await bcrypt.hash('admin123', 10);
     const result = await usersCollection.insertOne({
       name: 'System Admin',
-      email: 'admin@edvolve.com',
+      email: 'admin@edvols.com',
       password: hashed,
       role: 'master_admin',
       created_at: new Date(),

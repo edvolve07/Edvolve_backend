@@ -1098,7 +1098,7 @@ router.get(
       doc.font('Helvetica-Bold').text(`Issued: ${new Date(certificate.issued_at).toLocaleDateString()}`, { align: 'center' });
       doc.text(`Score: ${certificate.score}`, { align: 'center' });
       doc.moveDown(4);
-      doc.font('Helvetica-Bold').fillColor('#064e3b').text('Edvolve', { align: 'center' });
+      doc.font('Helvetica-Bold').fillColor('#064e3b').text('Edvols', { align: 'center' });
     });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=certificate_${certificate.milestone}.pdf`);

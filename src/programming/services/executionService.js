@@ -9,7 +9,7 @@ import {
   getJudge0Health,
 } from './judge0ExecutionService.js';
 
-const TEMP_DIR = path.join(os.tmpdir(), 'edvolve-code-exec');
+const TEMP_DIR = path.join(os.tmpdir(), 'edvols-code-exec');
 
 function ensureTempDir() {
   if (!fs.existsSync(TEMP_DIR)) {

@@ -29,14 +29,13 @@ import { getCodeRunnerHealth } from "./programming/services/executionService.js"
 import { aiService } from "./services/aiService.js";
 import { extractTextFromPdf } from "./services/resumeParser.js";
 import { transcriber } from "./services/transcriber.js";
-import { handleUpload } from "@vercel/blob/client";
+
 import {
   analyzeVideo,
   cleanupFiles,
   extractAudio,
   hasVideoStream,
-  lowQualityMetrics,
-  writeTempFile
+  lowQualityMetrics
 } from "./services/mediaService.js";
 import { generateAtsPdf, generatePerformancePdf } from "./services/pdfReports.js";
 import { HttpError, asyncHandler } from "./utils/httpError.js";
@@ -47,7 +46,7 @@ import { Op, InterviewSession, InterviewReport, Admin, Student, AptitudeQuestion
 
 const app = express();
 const upload = multer({
-  storage: multer.memoryStorage(),
+  dest: "uploads/",
   limits: { fileSize: config.maxVideoSize }
 });
 
@@ -368,12 +367,13 @@ app.post("/api/start", requireAuth, requireModuleAccess('ai_interview'), upload.
     throw new HttpError(400, "PDF required");
   }
 
-  const typeCheck = validateFileType(req.file.buffer, req.file.originalname);
+  const fileBuffer = await fs.readFile(req.file.path);
+  const typeCheck = validateFileType(fileBuffer, req.file.originalname);
   if (!typeCheck.valid) {
     throw new HttpError(400, typeCheck.error);
   }
 
-  const resumeText = await extractTextFromPdf(req.file.buffer);
+  const resumeText = await extractTextFromPdf(fileBuffer);
   const ats = await aiService.analyzeResume(resumeText);
   const firstQuestion = await aiService.generateFirstQuestion(resumeText, domain, role);
   const sessionId = uuidv4();
@@ -416,20 +416,7 @@ app.post("/api/answer_text", requireAuth, requireModuleAccess('ai_interview'), a
   res.json(await handleAnswer({ sessionId, answer, user: req.user }));
 }));
 
-app.post("/api/handle-upload", requireAuth, requireModuleAccess('ai_interview'), asyncHandler(async (req, res) => {
-  const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!blobToken) throw new HttpError(501, "Vercel Blob not configured");
-  const result = await handleUpload({
-    token: blobToken,
-    request: req,
-    body: req.body,
-    onBeforeGenerateToken: async () => ({
-      allowedContentTypes: ['audio/webm', 'video/webm', 'audio/ogg', 'video/mp4', 'audio/mp4'],
-      maximumSizeInBytes: config.maxVideoSize,
-    }),
-  });
-  res.json(result);
-}));
+
 
 app.post("/api/answer_video", requireAuth, requireModuleAccess('ai_interview'), upload.single("video"), asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body;
@@ -442,7 +429,7 @@ app.post("/api/answer_video", requireAuth, requireModuleAccess('ai_interview'), 
     throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
   }
 
-  const rawPath = await writeTempFile(req.file, fileExtension(req.file, ".mp4"));
+  const rawPath = req.file.path;
   let audioPath;
 
   try {
@@ -456,50 +443,26 @@ app.post("/api/answer_video", requireAuth, requireModuleAccess('ai_interview'), 
   }
 }));
 
-async function downloadAndSave(url, suffix) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new HttpError(502, `Failed to download blob: ${response.status}`);
-  }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const safeSuffix = suffix || "";
-  const tempPath = `/tmp/edvolve-${Date.now()}-${Math.random().toString(16).slice(2)}${safeSuffix}`;
-  await fs.writeFile(tempPath, buffer);
-  return tempPath;
-}
-
-app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_interview'), (req, res, next) => {
-  if (req.body?.videoUrl || req.body?.audioUrl) return next();
-  upload.fields([
-    { name: "video", maxCount: 1 },
-    { name: "audio", maxCount: 1 }
-  ])(req, res, next);
-}, asyncHandler(async (req, res) => {
+app.post("/api/answer_video_with_audio", requireAuth, requireModuleAccess('ai_interview'), upload.fields([
+  { name: "video", maxCount: 1 },
+  { name: "audio", maxCount: 1 }
+]), asyncHandler(async (req, res) => {
   const { session_id: sessionId } = req.body;
-  const videoUrl = req.body?.videoUrl;
-  const audioUrl = req.body?.audioUrl;
   const videoFile = req.files?.video?.[0];
   const audioFile = req.files?.audio?.[0];
 
-  let videoPath, rawAudioPath;
-
-  if (videoUrl && audioUrl) {
-    if (!sessionId) throw new HttpError(400, "session_id is required");
-    videoPath = await downloadAndSave(videoUrl, ".webm");
-    rawAudioPath = await downloadAndSave(audioUrl, ".webm");
-  } else {
-    if (!sessionId || !videoFile || !audioFile) {
-      throw new HttpError(400, "session_id, video, and audio are required");
-    }
-    if (videoFile.size > config.maxVideoSize) {
-      throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
-    }
-    if (audioFile.size > 50 * 1024 * 1024) {
-      throw new HttpError(400, "Audio exceeds 50MB");
-    }
-    videoPath = await writeTempFile(videoFile, fileExtension(videoFile, ".webm"));
-    rawAudioPath = await writeTempFile(audioFile, fileExtension(audioFile, ".webm"));
+  if (!sessionId || !videoFile || !audioFile) {
+    throw new HttpError(400, "session_id, video, and audio are required");
   }
+  if (videoFile.size > config.maxVideoSize) {
+    throw new HttpError(400, `Video exceeds ${Math.floor(config.maxVideoSize / 1024 / 1024)}MB`);
+  }
+  if (audioFile.size > 50 * 1024 * 1024) {
+    throw new HttpError(400, "Audio exceeds 50MB");
+  }
+
+  let videoPath = videoFile.path;
+  let rawAudioPath = audioFile.path;
 
   try {
     const transcript = await transcriber.transcribe(rawAudioPath);
@@ -536,11 +499,18 @@ app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHand
 
   const session = await getSession(sessionId);
   assertCanAccessSession(req.user, session);
-  const history = session.history || [];
 
-  if (!history.length) {
-    throw new HttpError(400, "No answers");
+  const existing = await InterviewReport.findOne({ where: { session_id: sessionId } });
+  if (existing) {
+    await updateSessionAtomic(sessionId, { status: "ended" });
+    res.json(existing);
+    return;
   }
+
+  const history = (session.history || []).map(item => ({
+    ...item,
+    answer: item.answer || "Not Answered"
+  }));
 
   const metricKeys = ["confidence", "body_language", "knowledge", "fluency", "skill_relevance"];
   const metricSums = Object.fromEntries(metricKeys.map((key) => [key, 0]));
@@ -554,12 +524,12 @@ app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHand
     evaluations.push(evaluation);
   }
 
-  const count = history.length;
+  const count = history.length || 1;
   const avg = Object.fromEntries(
     metricKeys.map((key) => [key, Number((metricSums[key] / count).toFixed(1))])
   );
   const totalScore = Object.values(metricSums).reduce((sum, value) => sum + value, 0);
-  const maxPossible = count * 50;
+  const maxPossible = (history.length || 1) * 50;
   const percentage = maxPossible ? (totalScore / maxPossible) * 100 : 0;
   let grade = "F";
   let label = "Re-take";
@@ -579,8 +549,29 @@ app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHand
   }
 
   const ats = session.ats_analysis || {};
-  const summary = await aiService.generateOverallReport(ats, evaluations);
+  let summary;
+  try {
+    summary = await aiService.generateOverallReport(ats, evaluations);
+  } catch {
+    summary = {};
+  }
   const reportId = `FB-${new Date().toISOString().slice(0, 10)}-${uuidv4().slice(0, 3).toUpperCase()}`;
+
+  const questionBreakdown = history.length
+    ? history.map((item, index) => ({
+        number: index + 1,
+        question: item.question,
+        answer: item.answer && item.answer !== "Not Answered" && item.answer.length > 200
+          ? `${item.answer.slice(0, 200)}...`
+          : item.answer || "Not Answered",
+        evaluation: item.evaluation || {}
+      }))
+    : [{
+        number: 1,
+        question: session.current_question || "No question was asked",
+        answer: "Not Answered",
+        evaluation: {}
+      }];
 
   const report = {
     session_id: sessionId,
@@ -610,12 +601,7 @@ app.post("/api/end", requireAuth, requireModuleAccess('ai_interview'), asyncHand
       skills_found: ats.skills_found || [],
       improvements: ats.improvements || []
     },
-    question_breakdown: history.map((item, index) => ({
-      number: index + 1,
-      question: item.question,
-      answer: item.answer?.length > 200 ? `${item.answer.slice(0, 200)}...` : item.answer,
-      evaluation: item.evaluation
-    })),
+    question_breakdown: questionBreakdown,
     strengths: Array.isArray(summary.strengths) ? summary.strengths : [],
     areas_to_improve: Array.isArray(summary.areas_to_improve) ? summary.areas_to_improve : [],
     interview_tips: Array.isArray(summary.interview_tips) ? summary.interview_tips : []

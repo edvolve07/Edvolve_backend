@@ -1,7 +1,7 @@
 {
-  "name": "edvolve-backend-node",
+  "name": "edvols-backend-node",
   "version": "1.0.0",
-  "description": "Node.js backend for the Edvolve AI interview system.",
+  "description": "Node.js backend for the Edvols AI interview system.",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@livekit/rtc-node": "^0.13.29",
-    "@vercel/blob": "^2.4.0",
+
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",

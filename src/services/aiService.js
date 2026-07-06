@@ -23,57 +23,53 @@ function clampScore(value) {
 
 class AiService {
   constructor() {
-    this.client = config.groqApiKey ? new Groq({ apiKey: config.groqApiKey }) : null;
     this.models = [
       "llama-3.3-70b-versatile",
       "llama-3.1-8b-instant",
     ];
+    this.clients = config.groqApiKeys.map(key => new Groq({ apiKey: key }));
   }
 
-  setApiKey(apiKey) {
-    config.groqApiKey = apiKey;
-    this.client = new Groq({ apiKey });
-  }
-
-  getClient() {
-    if (!this.client) {
-      throw new HttpError(503, "Groq API key is not configured");
-    }
-
-    return this.client;
+  rebuildClients() {
+    this.clients = config.groqApiKeys.map(key => new Groq({ apiKey: key }));
   }
 
   async generateContent(prompt, feature = "interview_chat") {
-    let lastError;
-    const client = this.getClient();
+    if (this.clients.length === 0) {
+      throw new HttpError(503, "Groq API key is not configured");
+    }
 
-    for (const model of this.models) {
-      try {
-        const response = await client.chat.completions.create({
-          model,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3
-        });
-        await recordAiUsage({
-          provider: "groq",
-          model,
-          feature,
-          usage: response.usage
-        });
-        return response.choices?.[0]?.message?.content || "";
-      } catch (error) {
-        lastError = error;
-        await recordAiUsage({
-          provider: "groq",
-          model,
-          feature,
-          status: "error",
-          metadata: { message: error.message }
-        });
+    let lastError;
+
+    for (const client of this.clients) {
+      for (const model of this.models) {
+        try {
+          const response = await client.chat.completions.create({
+            model,
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.3
+          });
+          await recordAiUsage({
+            provider: "groq",
+            model,
+            feature,
+            usage: response.usage
+          });
+          return response.choices?.[0]?.message?.content || "";
+        } catch (error) {
+          lastError = error;
+          await recordAiUsage({
+            provider: "groq",
+            model,
+            feature,
+            status: "error",
+            metadata: { message: error.message }
+          });
+        }
       }
     }
 
-    throw new HttpError(500, `All Groq models failed: ${lastError?.message || lastError}`);
+    throw new HttpError(500, `All Groq models and keys failed: ${lastError?.message || lastError}`);
   }
 
   async analyzeResume(resumeText) {

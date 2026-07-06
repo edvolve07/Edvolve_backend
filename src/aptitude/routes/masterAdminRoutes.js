@@ -169,8 +169,8 @@ async function writeEnvValue(key, value) {
 function refreshRuntimeProvider(provider, apiKey) {
   process.env[provider.envKey] = apiKey;
   if (provider.id === 'groq') {
-    config.groqApiKey = apiKey;
-    aiService.setApiKey(apiKey);
+    config.groqApiKeys = String(apiKey || '').split(',').map(s => s.trim()).filter(Boolean);
+    aiService.rebuildClients();
     transcriber.setApiKey(apiKey);
   }
 }

@@ -40,10 +40,10 @@ function createMessage({ to, subject, text, html }) {
     `To: ${escapeHeader(to)}`,
     `Subject: ${escapeHeader(subject)}`,
     'MIME-Version: 1.0',
-    'Content-Type: multipart/alternative; boundary="edvolve-reset-boundary"',
+    'Content-Type: multipart/alternative; boundary="Edvols-reset-boundary"',
   ];
 
-  return `${headers.join('\r\n')}\r\n\r\n--edvolve-reset-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n\r\n--edvolve-reset-boundary\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${html}\r\n\r\n--edvolve-reset-boundary--`;
+  return `${headers.join('\r\n')}\r\n\r\n--Edvols-reset-boundary\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n\r\n--Edvols-reset-boundary\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${html}\r\n\r\n--Edvols-reset-boundary--`;
 }
 
 async function deliverEmail({ to, subject, text, html }) {
@@ -91,14 +91,14 @@ async function deliverEmail({ to, subject, text, html }) {
 }
 
 function createPasswordResetTemplate({ name, resetLink }) {
-  const safeName = escapeHtml(name || 'Edvolve user');
+  const safeName = escapeHtml(name || 'Edvols user');
   const safeResetLink = escapeHtml(resetLink);
   const ttl = RESET_TOKEN_TTL_MINUTES;
 
   const text = [
-    `Hi ${name || 'Edvolve user'},`,
+    `Hi ${name || 'Edvols user'},`,
     '',
-    'We received a request to reset the password for your Edvolve account.',
+    'We received a request to reset the password for your Edvols account.',
     '',
     `Reset your password using this secure link. It expires in ${ttl} minutes:`,
     resetLink,
@@ -108,7 +108,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
     'For your security, do not forward this email or share the reset link with anyone.',
     '',
     'Regards,',
-    'The Edvolve Team',
+    'The Edvols Team',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -116,7 +116,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Reset your Edvolve password</title>
+    <title>Reset your Edvols password</title>
   </head>
   <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
@@ -125,7 +125,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
-                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvolve</div>
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvols</div>
                 <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
               </td>
             </tr>
@@ -134,7 +134,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
                 <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Hi ${safeName},</p>
                 <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Reset your password</h1>
                 <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
-                  We received a request to reset the password for your Edvolve account. Use the secure button below to create a new password.
+                  We received a request to reset the password for your Edvols account. Use the secure button below to create a new password.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" style="margin:26px 0;">
                   <tr>
@@ -164,7 +164,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
                 <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
                   For your security, do not forward this email or share the reset link with anyone.
                 </p>
-                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvolve Team</p>
+                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvols Team</p>
               </td>
             </tr>
           </table>
@@ -308,7 +308,7 @@ export async function sendEmailVerificationEmail({ to, name, verifyLink }) {
 </div>
 <p style="color: #6b7280; font-size: 13px; line-height: 1.5;">
   If you did not create an account, you can safely ignore this email.<br>
-  &mdash; Edvolve Team
+  &mdash; Edvols Team
 </p>
 </div></body></html>`;
 
@@ -326,8 +326,8 @@ export async function sendPasswordResetEmail({ to, name, resetLink }) {
   const secure = boolEnv('SMTP_SECURE', port === 465);
   const startTls = boolEnv('SMTP_STARTTLS', !secure);
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-  const safeName = name || 'Edvolve user';
-  const subject = 'Reset your Edvolve password';
+  const safeName = name || 'Edvols user';
+  const subject = 'Reset your Edvols password';
   const { text, html } = createPasswordResetTemplate({ name: safeName, resetLink });
 
   const client = createSmtpClient({ host, port, secure });
@@ -371,7 +371,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
   const text = [
     `Dear ${name || 'User'},`,
     '',
-    `Your Edvolve account has been created.`,
+    `Your Edvols account has been created.`,
     '',
     `Account details:`,
     `  Name:  ${name}`,
@@ -383,7 +383,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
     `Login URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}/login`,
     '',
     'Regards,',
-    'The Edvolve Team',
+    'The Edvols Team',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -391,7 +391,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Welcome to Edvolve</title>
+    <title>Welcome to Edvols</title>
   </head>
   <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
@@ -400,14 +400,14 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
-                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvolve</div>
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvols</div>
                 <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
               </td>
             </tr>
             <tr>
               <td style="padding:32px;">
                 <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Dear ${safeName},</p>
-                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Welcome to Edvolve</h1>
+                <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">Welcome to Edvols</h1>
                 <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
                   Your account has been created. Please find your login details below.
                 </p>
@@ -438,7 +438,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
                   <tr>
                     <td style="border-radius:10px;background:#2563eb;">
                       <a href="${escapeHtml(process.env.CLIENT_URL || 'http://localhost:5173')}/login" style="display:inline-block;padding:14px 22px;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
-                        Login to Edvolve
+                        Login to Edvols
                       </a>
                     </td>
                   </tr>
@@ -450,7 +450,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
                 <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b;">
                   For your security, please change your password immediately after first login.
                 </p>
-                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvolve Team</p>
+                <p style="margin:10px 0 0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvols Team</p>
               </td>
             </tr>
           </table>
@@ -473,8 +473,8 @@ export async function sendAccountCreationEmail({ to, name, tempPassword }) {
   const secure = boolEnv('SMTP_SECURE', port === 465);
   const startTls = boolEnv('SMTP_STARTTLS', !secure);
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-  const safeName = name || 'Edvolve user';
-  const subject = 'Your Edvolve account has been created';
+  const safeName = name || 'Edvols user';
+  const subject = 'Your Edvols account has been created';
   const { text, html } = createAccountCreationTemplate({ name: safeName, email: to, tempPassword });
 
   const client = createSmtpClient({ host, port, secure });
@@ -523,7 +523,7 @@ function formatAssessmentDate(value) {
 }
 
 function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
-  const safeName = escapeHtml(name || 'Edvolve student');
+  const safeName = escapeHtml(name || 'Edvols student');
   const safeAdminName = escapeHtml(adminName || 'your admin');
   const safeTitle = escapeHtml(assessment.title || 'Aptitude Assessment');
   const safeConcept = escapeHtml(assessment.concept || 'Aptitude');
@@ -535,9 +535,9 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
   const safeLoginUrl = escapeHtml(loginUrl);
 
   const text = [
-    `Hi ${name || 'Edvolve student'},`,
+    `Hi ${name || 'Edvols student'},`,
     '',
-    `${adminName || 'Your admin'} has published a new aptitude assessment for you on Edvolve.`,
+    `${adminName || 'Your admin'} has published a new aptitude assessment for you on Edvols.`,
     '',
     `Assessment: ${assessment.title || 'Aptitude Assessment'}`,
     `Concept: ${assessment.concept || 'Aptitude'}`,
@@ -546,10 +546,10 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
     `Start: ${formatAssessmentDate(assessment.start_time)}`,
     `End: ${formatAssessmentDate(assessment.end_time)}`,
     '',
-    `Open Edvolve to view and start the assessment: ${loginUrl}`,
+    `Open Edvols to view and start the assessment: ${loginUrl}`,
     '',
     'Regards,',
-    'The Edvolve Team',
+    'The Edvols Team',
   ].join('\n');
 
   const html = `<!doctype html>
@@ -557,7 +557,7 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>New Edvolve aptitude assessment</title>
+    <title>New Edvols aptitude assessment</title>
   </head>
   <body style="margin:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;padding:32px 12px;">
@@ -566,7 +566,7 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#064e3b;padding:28px 32px;color:#ffffff;">
-                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvolve</div>
+                <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvols</div>
                 <div style="margin-top:6px;font-size:13px;color:#d1fae5;">New aptitude assessment published</div>
               </td>
             </tr>
@@ -575,7 +575,7 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
                 <p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#334155;">Hi ${safeName},</p>
                 <h1 style="margin:0 0 14px;font-size:24px;line-height:1.3;color:#0f172a;">${safeTitle}</h1>
                 <p style="margin:0 0 18px;font-size:15px;line-height:1.7;color:#475569;">
-                  ${safeAdminName} has published a new aptitude assessment for you. Open Edvolve to review the schedule and begin when it is available.
+                  ${safeAdminName} has published a new aptitude assessment for you. Open Edvols to review the schedule and begin when it is available.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" style="margin:22px 0;width:100%;">
                   <tr>
@@ -603,7 +603,7 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
             </tr>
             <tr>
               <td style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;">
-                <p style="margin:0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvolve Team</p>
+                <p style="margin:0;font-size:12px;color:#94a3b8;">Regards,<br>The Edvols Team</p>
               </td>
             </tr>
           </table>
@@ -617,8 +617,8 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
 }
 
 export async function sendAssessmentPublishedEmail({ to, name, assessment, adminName }) {
-  const safeName = name || 'Edvolve student';
-  const subject = `New aptitude assessment: ${assessment.title || 'Edvolve Assessment'}`;
+  const safeName = name || 'Edvols student';
+  const subject = `New aptitude assessment: ${assessment.title || 'Edvols Assessment'}`;
   const { text, html } = createAssessmentPublishedTemplate({ name: safeName, assessment, adminName });
   await deliverEmail({ to, subject, text, html });
 }

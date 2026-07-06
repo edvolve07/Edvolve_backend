@@ -205,7 +205,7 @@ const BEGINNER_PROBLEMS = [
     output_format: 'Print s in reverse order.',
     constraints: '1 <= length of s <= 10^5',
     tests: [
-      ['hello', 'olleh'], ['world', 'dlrow'], ['a', 'a'], ['edvolve', 'evlovede'], ['12345', '54321'], ['racecar', 'racecar'],
+      ['hello', 'olleh'], ['world', 'dlrow'], ['a', 'a'], ['edvols', 'evlovede'], ['12345', '54321'], ['racecar', 'racecar'],
     ],
     goal: 'Reverse the characters of a string.',
     hint: 'Walk from the end to the beginning, or use your language string reverse utilities.',
@@ -310,7 +310,7 @@ function hintFor(problem) {
   if (text.includes('array')) return 'Read the count first when present, then process the array with one clear loop.';
   if (text.includes('string')) return 'Think about indexes, character order, and whether case sensitivity matters.';
   if (text.includes('sort')) return 'You may implement the named algorithm, but the final printed order must match exactly.';
-  if (text.includes('search')) return 'Return the expected index convention from the statement; most Edvolve search tasks use 0-based indexing.';
+  if (text.includes('search')) return 'Return the expected index convention from the statement; most edvols search tasks use 0-based indexing.';
   if (text.includes('recursion')) return 'Define the base case first, then reduce the problem toward that base case.';
   if (isConceptual(problem)) return 'Focus on a clean implementation and explainable behavior; these tasks are better reviewed by a mentor than by hidden tests.';
   return 'Start with the simplest correct approach, then check edge cases such as zero, negatives, duplicates, and single-item input.';
@@ -337,7 +337,7 @@ function generatedCases(problem) {
     return [['', 'Hello, World!'], ['', 'Hello, World!'], ['', 'Hello, World!'], ['', 'Hello, World!'], ['', 'Hello, World!'], ['', 'Hello, World!']];
   }
   if (text.includes('your name') || text.includes('print name') || text.includes('greeting')) {
-    return [['Alice', 'Hello, Alice!'], ['Bob', 'Hello, Bob!'], ['Santhosh', 'Hello, Santhosh!'], ['A', 'Hello, A!'], ['Edvolve', 'Hello, Edvolve!'], ['Student', 'Hello, Student!']];
+    return [['Alice', 'Hello, Alice!'], ['Bob', 'Hello, Bob!'], ['Santhosh', 'Hello, Santhosh!'], ['A', 'Hello, A!'], ['edvols', 'Hello, edvols!'], ['Student', 'Hello, Student!']];
   }
   if (text.includes('sum of two') || text.includes('add two')) {
     return BEGINNER_PROBLEMS.find((p) => p.title === 'Add Two Numbers').tests;

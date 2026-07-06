@@ -1,6 +1,6 @@
 # Judge0 Runner
 
-Edvolve can use Judge0 as an external code runner for programming practice and programming assessments.
+Edvols can use Judge0 as an external code runner for programming practice and programming assessments.
 
 The frontend and main backend stay the same. The backend sends code and test cases to Judge0, then stores the result in MongoDB.
 
@@ -36,7 +36,7 @@ This repo includes a portable Judge0 service folder at:
 ../judge0-service
 ```
 
-Use this folder for local testing or copy it to a VPS when you are ready to run Judge0 separately from the Edvolve backend.
+Use this folder for local testing or copy it to a VPS when you are ready to run Judge0 separately from the Edvols backend.
 
 First-time setup:
 
@@ -46,7 +46,7 @@ chmod +x scripts/*.sh
 ./scripts/generate-secrets.sh
 ```
 
-The setup script creates `judge0.conf`, `.env`, and prints a Judge0 API token. Put that token in the Edvolve backend as `JUDGE0_API_KEY`.
+The setup script creates `judge0.conf`, `.env`, and prints a Judge0 API token. Put that token in the Edvols backend as `JUDGE0_API_KEY`.
 
 Start Judge0:
 
@@ -61,13 +61,13 @@ Check Judge0:
 curl -H "X-Auth-Token: YOUR_JUDGE0_TOKEN" http://localhost:2358/languages
 ```
 
-If Edvolve backend and Judge0 run on the same machine, keep the Judge0 service bound to localhost and use:
+If Edvols backend and Judge0 run on the same machine, keep the Judge0 service bound to localhost and use:
 
 ```env
 JUDGE0_BASE_URL=http://localhost:2358
 ```
 
-If Edvolve backend and Judge0 run on different machines, expose port `2358` only to the Edvolve backend IP and keep `AUTHN_TOKEN` enabled in `judge0.conf`.
+If Edvols backend and Judge0 run on different machines, expose port `2358` only to the Edvols backend IP and keep `AUTHN_TOKEN` enabled in `judge0.conf`.
 
 ## Local Judge0 Verification
 
@@ -78,14 +78,14 @@ curl -H "X-Auth-Token: YOUR_JUDGE0_TOKEN" http://localhost:2358/about
 curl -H "X-Auth-Token: YOUR_JUDGE0_TOKEN" http://localhost:2358/languages
 ```
 
-Then run the Edvolve backend:
+Then run the Edvols backend:
 
 ```bash
 cd backend
 npm run dev
 ```
 
-Check that Edvolve can see Judge0:
+Check that Edvols can see Judge0:
 
 ```bash
 curl http://localhost:8000/api/health
@@ -134,10 +134,10 @@ sudo ./scripts/start.sh
 
 ## VPS Shape
 
-For production, keep Judge0 separate from the Edvolve API:
+For production, keep Judge0 separate from the Edvols API:
 
 ```text
-Edvolve frontend -> Edvolve backend -> Judge0 VPS
+Edvols frontend -> Edvols backend -> Judge0 VPS
 ```
 
 Protect the Judge0 API with a firewall, reverse proxy auth, or Judge0 auth token. Do not call Judge0 directly from the browser because that exposes runner access and hidden test-case behavior.

@@ -593,7 +593,7 @@ router.get(
     const assignedStudentIds = assignedStudents.map((student) => student._id);
     const assignedStudentIdStrings = assignedStudents.map((student) => student._id.toString());
     let rows = [];
-    let title = 'Edvolve Report';
+    let title = 'Edvols Report';
 
     if (type === 'student-performance') {
       title = 'Student Performance Report';
