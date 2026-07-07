@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { requireAuth, requireModuleAccess } from '../../aptitude/middleware/auth.js';
 import { HttpError, asyncHandler } from '../../utils/httpError.js';
 import { CommunicationSession } from '../../database/models/CommunicationSession.js';
@@ -13,8 +14,9 @@ import { aiService } from '../../services/aiService.js';
 import { transcriber } from '../../services/transcriber.js';
 import { config } from '../../config.js';
 
-const upload = multer({ dest: '/tmp/opencode/audio' });
-if (!fs.existsSync('/tmp/opencode/audio')) fs.mkdirSync('/tmp/opencode/audio', { recursive: true });
+const uploadDir = path.join(os.tmpdir(), 'edvolve-audio');
+const upload = multer({ dest: uploadDir });
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const commAi = config.nvidiaApiKey ? nimService : aiService;
 

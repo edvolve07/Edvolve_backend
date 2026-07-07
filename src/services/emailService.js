@@ -94,6 +94,8 @@ function createPasswordResetTemplate({ name, resetLink }) {
   const safeName = escapeHtml(name || 'Edvols user');
   const safeResetLink = escapeHtml(resetLink);
   const ttl = RESET_TOKEN_TTL_MINUTES;
+  const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+  const logoUrl = `${clientUrl}/edvols%20logo.png`;
 
   const text = [
     `Hi ${name || 'Edvols user'},`,
@@ -125,6 +127,7 @@ function createPasswordResetTemplate({ name, resetLink }) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
+                <img src="${logoUrl}" alt="Edvols" style="width:140px;height:auto;margin-bottom:8px;display:block;">
                 <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvols</div>
                 <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
               </td>
@@ -289,10 +292,13 @@ export function getPasswordResetBaseUrl(req) {
 export async function sendEmailVerificationEmail({ to, name, verifyLink }) {
   if (!isEmailServiceConfigured()) return;
 
+  const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+  const logoUrl = `${clientUrl}/edvols%20logo.png`;
   const subject = 'Verify your email address';
   const html = `<!DOCTYPE html>
 <html><body style="font-family: Arial, sans-serif; max-width: 480px; margin: auto; padding: 24px;">
 <div style="background: #f9fafb; border-radius: 8px; padding: 24px;">
+<img src="${logoUrl}" alt="Edvols" style="width:140px;height:auto;margin-bottom:16px;display:block;">
 <h2 style="color: #111827; margin: 0 0 8px;">Verify Your Email</h2>
 <p style="color: #4b5563; line-height: 1.5;">
   Hi ${escapeHtml(name)},<br><br>
@@ -367,6 +373,8 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
   const safeName = escapeHtml(name || 'User');
   const safeEmail = escapeHtml(userEmail);
   const safeTempPassword = escapeHtml(tempPassword);
+  const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+  const logoUrl = `${clientUrl}/edvols%20logo.png`;
 
   const text = [
     `Dear ${name || 'User'},`,
@@ -380,7 +388,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
     '',
     'Please login and change your password at the earliest.',
     '',
-    `Login URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}/login`,
+    `Login URL: ${clientUrl}/login`,
     '',
     'Regards,',
     'The Edvols Team',
@@ -400,6 +408,7 @@ function createAccountCreationTemplate({ name, email: userEmail, tempPassword })
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#0f172a;padding:28px 32px;color:#ffffff;">
+                <img src="${logoUrl}" alt="Edvols" style="width:140px;height:auto;margin-bottom:8px;display:block;">
                 <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvols</div>
                 <div style="margin-top:6px;font-size:13px;color:#cbd5e1;">Placement readiness workspace</div>
               </td>
@@ -533,6 +542,8 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
   const safeEnd = escapeHtml(formatAssessmentDate(assessment.end_time));
   const loginUrl = `${process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173'}/aptitude`;
   const safeLoginUrl = escapeHtml(loginUrl);
+  const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+  const logoUrl = `${clientUrl}/edvols%20logo.png`;
 
   const text = [
     `Hi ${name || 'Edvols student'},`,
@@ -566,6 +577,7 @@ function createAssessmentPublishedTemplate({ name, assessment, adminName }) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
             <tr>
               <td style="background:#064e3b;padding:28px 32px;color:#ffffff;">
+                <img src="${logoUrl}" alt="Edvols" style="width:140px;height:auto;margin-bottom:8px;display:block;">
                 <div style="font-size:22px;font-weight:800;letter-spacing:.2px;">Edvols</div>
                 <div style="margin-top:6px;font-size:13px;color:#d1fae5;">New aptitude assessment published</div>
               </td>
