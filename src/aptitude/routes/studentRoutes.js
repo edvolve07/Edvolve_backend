@@ -81,12 +81,15 @@ function ensureAvailable(assessment) {
 function toDateKey(value) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) return null;
-  return date.toISOString().slice(0, 10);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function daysBetween(dateKeyA, dateKeyB) {
-  const a = new Date(`${dateKeyA}T00:00:00.000Z`).getTime();
-  const b = new Date(`${dateKeyB}T00:00:00.000Z`).getTime();
+  const a = new Date(`${dateKeyA}T00:00:00`).getTime();
+  const b = new Date(`${dateKeyB}T00:00:00`).getTime();
   return Math.round((a - b) / (24 * 60 * 60 * 1000));
 }
 
@@ -730,7 +733,9 @@ router.get(
     ].sort((a, b) => formatActivityDate(b.occurred_at) - formatActivityDate(a.occurred_at));
     const recentActivity = dedupeActivity(activity).slice(0, 8);
 
-    const streak = buildStreak(activity.map((item) => item.occurred_at));
+    const activityDates = activity.map((item) => item.occurred_at);
+    activityDates.push(new Date());
+    const streak = buildStreak(activityDates);
     const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const weeklyCompleted = activity.filter((item) => formatActivityDate(item.occurred_at) >= weekStart).length;
     const resumeScore = latestResume?.ats_analysis?.ats_score || latestInterviewReport?.ats_analysis?.ats_score || 0;
