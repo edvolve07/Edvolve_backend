@@ -22,6 +22,7 @@ if (!process.env.JUDGE0_BASE_URL && process.env.CODE_RUNNER_PROVIDER !== 'local'
   console.error('[SECURITY] JUDGE0_BASE_URL is not configured. Set CODE_RUNNER_PROVIDER=local only in development.');
 }
 
+
 if (!process.env.ADMIN_EMAILS) {
   console.warn('[SECURITY] ADMIN_EMAILS is not set. No admin accounts can be created via signup.');
 }
