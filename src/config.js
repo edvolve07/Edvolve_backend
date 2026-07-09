@@ -57,3 +57,5 @@ export const config = {
   livekitApiKey: process.env.LIVEKIT_API_KEY || 'devkey',
   livekitApiSecret: process.env.LIVEKIT_API_SECRET || 'devsecret',
 };
+
+
