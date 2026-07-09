@@ -36,6 +36,8 @@ export const ALLOWED_ORIGINS = [
   'http://localhost:4173',
 ].filter(Boolean);
 
+
+
 export const config = {
   databaseUrl: process.env.DATABASE_URL,
   groqApiKeys: String(process.env.GROQ_API_KEY || '').split(',').map(s => s.trim()).filter(Boolean),
