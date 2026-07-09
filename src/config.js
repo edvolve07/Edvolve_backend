@@ -16,6 +16,8 @@ if (!process.env.DATABASE_URL) {
   console.error('[SECURITY] DATABASE_URL is not configured. The application will not start without a database connection.');
 }
 
+
+
 if (!process.env.JUDGE0_BASE_URL && process.env.CODE_RUNNER_PROVIDER !== 'local') {
   console.error('[SECURITY] JUDGE0_BASE_URL is not configured. Set CODE_RUNNER_PROVIDER=local only in development.');
 }
