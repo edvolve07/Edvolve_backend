@@ -11,6 +11,8 @@
  * Usage: node scripts/migrate-institutions.js
  */
 
+
+
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'node:path';
