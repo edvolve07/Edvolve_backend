@@ -313,6 +313,7 @@ function cleanResumeSections(value, limit = 8) {
 
 function analyzeResumePayload(payload, previousScore = 0) {
   const skills = cleanList(payload.skills);
+  const role = (payload.target_role || '').toLowerCase().trim();
   const sections = [
     payload.summary,
     ...(payload.experience || []).flatMap((section) => [section.title, ...(section.items || [])]),
@@ -322,31 +323,136 @@ function analyzeResumePayload(payload, previousScore = 0) {
     ...(payload.certifications || []),
   ].map((item) => String(item || '').trim()).filter(Boolean);
 
+  const allText = sections.join(' ').toLowerCase();
+  const actionVerbs = ['led', 'built', 'improved', 'reduced', 'designed', 'deployed', 'automated', 'developed', 'created', 'implemented', 'optimized', 'architected', 'engineered', 'delivered', 'managed', 'coordinated', 'launched', 'scaled', 'migrated', 'integrated', 'configured'];
+  const measurablePattern = /\b\d+%|\b\d+\+|\b\d+x\b|\$\d+/i;
+
+  const roleKeywords = {
+    'software engineer': { tech: ['javascript', 'python', 'java', 'react', 'node', 'sql', 'aws', 'docker', 'git', 'rest', 'api', 'microservices', 'ci/cd', 'typescript', 'mongodb', 'kubernetes'], concepts: ['agile', 'testing', 'system design', 'data structures', 'algorithms', 'code review', 'oop'] },
+    'frontend engineer': { tech: ['javascript', 'typescript', 'react', 'vue', 'angular', 'html', 'css', 'redux', 'webpack', 'rest api', 'responsive', 'testing', 'sass'], concepts: ['accessibility', 'performance', 'browser', 'ui/ux', 'responsive design', 'cross-browser', 'state management'] },
+    'backend engineer': { tech: ['node.js', 'python', 'java', 'go', 'postgresql', 'mongodb', 'redis', 'aws', 'docker', 'kubernetes', 'graphql', 'rest', 'kafka'], concepts: ['microservices', 'api design', 'scalability', 'caching', 'database design', 'authentication', 'ci/cd'] },
+    'full stack': { tech: ['javascript', 'typescript', 'react', 'node', 'python', 'sql', 'aws', 'docker', 'git', 'rest', 'html', 'css', 'mongodb'], concepts: ['full stack', 'agile', 'testing', 'devops', 'api', 'deployment', 'authentication'] },
+    'data scientist': { tech: ['python', 'r', 'sql', 'tensorflow', 'pytorch', 'scikit-learn', 'pandas', 'numpy', 'hadoop', 'spark', 'tableau', 'aws'], concepts: ['machine learning', 'statistics', 'nlp', 'deep learning', 'a/b testing', 'data pipeline', 'visualization'] },
+    'data engineer': { tech: ['python', 'sql', 'spark', 'airflow', 'kafka', 'hadoop', 'aws', 'gcp', 'docker', 'postgresql', 'bigquery', 'snowflake'], concepts: ['etl', 'data pipeline', 'data warehouse', 'orchestration', 'data modeling', 'streaming', 'batch processing'] },
+    'devops engineer': { tech: ['aws', 'gcp', 'azure', 'docker', 'kubernetes', 'terraform', 'ansible', 'jenkins', 'gitlab', 'prometheus', 'linux', 'helm'], concepts: ['ci/cd', 'infrastructure', 'monitoring', 'automation', 'containerization', 'cloud', 'incident response'] },
+    'product manager': { tech: ['jira', 'confluence', 'figma', 'sql', 'excel', 'amplitude', 'mixpanel', 'github'], concepts: ['roadmap', 'stakeholder', 'agile', 'user research', 'a/b testing', 'analytics', 'strategy', 'sprint'] },
+    'ui/ux designer': { tech: ['figma', 'sketch', 'adobe xd', 'framer', 'prototype', 'user research', 'wireframe', 'design system'], concepts: ['accessibility', 'usability', 'information architecture', 'user flows', 'visual design', 'responsive'] },
+    'quality assurance': { tech: ['selenium', 'cypress', 'jest', 'junit', 'postman', 'testrail', 'jira', 'sql'], concepts: ['automation', 'regression', 'integration testing', 'test planning', 'bug tracking', 'performance testing'] },
+    'mobile engineer': { tech: ['swift', 'kotlin', 'react native', 'flutter', 'android', 'ios', 'xcode', 'firebase'], concepts: ['mobile', 'app architecture', 'push notifications', 'offline', 'app store', 'performance'] },
+    'security engineer': { tech: ['python', 'go', 'aws', 'kubernetes', 'linux', 'burp suite', 'wireshark', 'owasp'], concepts: ['vulnerability', 'penetration testing', 'threat model', 'security audit', 'compliance', 'incident response'] },
+    'machine learning engineer': { tech: ['python', 'tensorflow', 'pytorch', 'scikit', 'mlflow', 'kubeflow', 'aws sagemaker', 'docker'], concepts: ['mlops', 'model deployment', 'feature engineering', 'training pipeline', 'a/b testing', 'monitoring'] },
+    'systems engineer': { tech: ['linux', 'aws', 'python', 'bash', 'docker', 'kubernetes', 'ansible', 'terraform'], concepts: ['infrastructure', 'automation', 'monitoring', 'scalability', 'high availability', 'performance'] },
+    'site reliability engineer': { tech: ['kubernetes', 'docker', 'prometheus', 'grafana', 'terraform', 'python', 'go', 'linux'], concepts: ['sli', 'slo', 'incident management', 'on-call', 'chaos engineering', 'capacity planning'] },
+    'cloud engineer': { tech: ['aws', 'azure', 'gcp', 'terraform', 'docker', 'kubernetes', 'cloudformation', 'python'], concepts: ['migration', 'architecture', 'networking', 'cost optimization', 'security', 'serverless'] },
+    'embedded engineer': { tech: ['c', 'c++', 'python', 'rtos', 'linux', 'arm', 'microcontroller', 'i2c'], concepts: ['firmware', 'hardware', 'driver', 'realtime', 'protocol', 'signal processing'] },
+    'ios engineer': { tech: ['swift', 'objective-c', 'xcode', 'cocoa', 'swiftui', 'core data', 'alamofire', 'firebase'], concepts: ['app architecture', 'app store', 'push', 'offline', 'testing', 'ui kit'] },
+    'android engineer': { tech: ['kotlin', 'java', 'android studio', 'jetpack', 'compose', 'gradle', 'firebase', 'dagger'], concepts: ['mvvm', 'clean architecture', 'app store', 'testing', 'material design'] },
+    'ai engineer': { tech: ['python', 'tensorflow', 'pytorch', 'langchain', 'openai', 'huggingface', 'docker', 'aws'], concepts: ['llm', 'nlp', 'computer vision', 'fine-tuning', 'rag', 'agent', 'prompt engineering'] },
+  };
+
+  const matchedRole = Object.keys(roleKeywords).find((roleKey) => role.includes(roleKey) || roleKey.includes(role));
+  const keywords = matchedRole ? roleKeywords[matchedRole] : null;
+
+  let keywordMatches = 0;
+  let keywordTotal = 0;
+  let missingKeywords = [];
+
+  if (keywords) {
+    keywordTotal = keywords.tech.length + keywords.concepts.length;
+    const allJobText = allText + ' ' + skills.map((s) => s.toLowerCase()).join(' ');
+    for (const kw of keywords.tech) {
+      if (allJobText.includes(kw) || skills.some((s) => s.toLowerCase().includes(kw) || kw.includes(s.toLowerCase()))) {
+        keywordMatches++;
+      } else {
+        missingKeywords.push(kw);
+      }
+    }
+    for (const kw of keywords.concepts) {
+      if (allJobText.includes(kw)) {
+        keywordMatches++;
+      } else {
+        missingKeywords.push(kw);
+      }
+    }
+  }
+
   let score = 25;
-  if (payload.target_role) score += 10;
-  if (payload.summary && String(payload.summary).length >= 80) score += 15;
-  score += Math.min(skills.length * 3, 18);
-  if ((payload.experience || []).length) score += 14;
-  if ((payload.projects || []).length) score += 14;
-  if ((payload.achievements || []).length) score += 6;
-  if ((payload.certifications || []).length) score += 4;
-  if (sections.some((item) => /\b\d+%|\b\d+\+|\b\d+x\b/i.test(item))) score += 8;
-  if (sections.some((item) => /\b(led|built|improved|reduced|designed|deployed|automated)\b/i.test(item))) score += 6;
+  let sectionScores = {};
+
+  if (payload.target_role) { score += 8; sectionScores.targetRole = 8; } else { sectionScores.targetRole = 0; }
+  if (payload.summary && String(payload.summary).length >= 80) { score += 10; sectionScores.summary = 10; }
+  else if (payload.summary && String(payload.summary).length >= 40) { score += 5; sectionScores.summary = 5; }
+  else { sectionScores.summary = 0; }
+
+  const skillScore = Math.min(skills.length * 2.5, 15);
+  score += skillScore;
+  sectionScores.skills = skillScore;
+
+  if ((payload.experience || []).length) {
+    const expScore = Math.min((payload.experience || []).reduce((sum, e) => sum + ((e.items || []).length > 0 ? 5 : 0), 0), 15);
+    score += expScore;
+    sectionScores.experience = expScore;
+  } else { sectionScores.experience = 0; }
+
+  if ((payload.projects || []).length) {
+    const projScore = Math.min((payload.projects || []).reduce((sum, p) => sum + ((p.items || []).length > 0 ? 4 : 0), 0), 12);
+    sectionScores.projects = projScore;
+    score += projScore;
+  } else { sectionScores.projects = 0; }
+
+  if ((payload.achievements || []).length) { score += 4; sectionScores.achievements = 4; } else { sectionScores.achievements = 0; }
+  if ((payload.certifications || []).length) { score += 3; sectionScores.certifications = 3; } else { sectionScores.certifications = 0; }
+
+  const actionWordCount = actionVerbs.filter((v) => allText.includes(v)).length;
+  const actionScore = Math.min(actionWordCount * 3, 9);
+  score += actionScore;
+  sectionScores.actionVerbs = actionScore;
+
+  const measurableScore = sections.some((item) => measurablePattern.test(item)) ? 6 : 0;
+  score += measurableScore;
+  sectionScores.measurableOutcomes = measurableScore;
+
+  if (keywords) {
+    const keywordPct = keywordTotal > 0 ? Math.round((keywordMatches / keywordTotal) * 100) : 0;
+    const kwScore = Math.round(keywordPct * 0.12);
+    score += kwScore;
+    sectionScores.keywordMatch = kwScore;
+  } else {
+    sectionScores.keywordMatch = 0;
+  }
+
+  const linkedinPresent = payload.linkedin && String(payload.linkedin).trim().length > 0 ? 3 : 0;
+  const githubPresent = payload.github && String(payload.github).trim().length > 0 ? 2 : 0;
+  score += linkedinPresent + githubPresent;
+  sectionScores.contactLinks = linkedinPresent + githubPresent;
+
+  score = clampScore(Math.round(score));
 
   const improvements = [];
   const strengths = [];
-  if (!payload.target_role) improvements.push('Add a target role so the resume can be evaluated against a placement goal.');
+
+  if (!payload.target_role) improvements.push('Add a target role so resume can be evaluated against a placement goal.');
   if (!payload.summary || String(payload.summary).length < 80) improvements.push('Write a 3-4 line professional summary with role, skills, and measurable impact.');
-  if (skills.length < 6) improvements.push('Add at least 6 role-relevant technical and soft skills.');
+  if (skills.length < 6) improvements.push(`Add at least 6 role-relevant technical and soft skills (${skills.length} found).`);
   if (!(payload.projects || []).length) improvements.push('Add 1-2 projects with tools used, problem solved, and outcome.');
-  if (!sections.some((item) => /\b\d+%|\b\d+\+|\b\d+x\b/i.test(item))) improvements.push('Add measurable outcomes such as percentages, counts, or scale.');
-  if (payload.summary) strengths.push('Summary section present');
+  if (!sections.some((item) => measurablePattern.test(item))) improvements.push('Add measurable outcomes such as percentages, counts, revenue, or scale.');
+  if (actionWordCount < 3) improvements.push(`Use strong action verbs (led, built, improved) — only ${actionWordCount} found.`);
+  if (keywords && missingKeywords.length > 5) improvements.push(`Target keywords missing: ${missingKeywords.slice(0, 6).join(', ')}. Add these to your skills and experience.`);
+  if (!payload.linkedin) improvements.push('Add your LinkedIn URL — recruiters expect it.');
+  if ((payload.experience || []).every((e) => !(e.items || []).length)) improvements.push('Add bullet details under each experience entry.');
+
+  if (payload.summary) strengths.push('Professional summary included');
   if (skills.length >= 6) strengths.push('Strong skills coverage');
   if ((payload.projects || []).length) strengths.push('Project evidence included');
+  if (actionWordCount >= 3) strengths.push('Action verbs used throughout');
+  if (sections.some((item) => measurablePattern.test(item))) strengths.push('Measurable outcomes included');
+  if (keywords && keywordMatches > keywordTotal * 0.5) strengths.push('Good role-relevant keyword density');
 
   return {
     ats_score: clampScore(score),
     previous_score: clampScore(previousScore),
+    score_breakdown: sectionScores,
+    keyword_matches: keywords ? { matched: keywordMatches, total: keywordTotal, found: keywords.tech.filter((k) => allText.includes(k) || skills.some((s) => s.toLowerCase().includes(k))), missing: missingKeywords.slice(0, 8) } : null,
     improvements: improvements.slice(0, 6),
     strengths: strengths.slice(0, 5),
   };
@@ -916,6 +1022,46 @@ router.get(
 );
 
 router.get(
+  '/resume-builder/templates',
+  asyncHandler(async (req, res) => {
+    const templates = [
+      { id: 'swe', role: 'Software Engineer', category: 'Engineering', summary: 'Results-driven Software Engineer with 5+ years building scalable distributed systems. Proficient in Java, Python, and cloud-native architectures.', skills: ['Java', 'Python', 'React', 'AWS', 'Docker', 'Kubernetes', 'PostgreSQL', 'Redis', 'Kafka', 'Git', 'CI/CD', 'Microservices'], highlights: ['Designed a real-time event pipeline processing 2M+ events/day with Kafka and Spark', 'Reduced API latency by 40% through query optimization and caching strategies', 'Led migration of monolith to microservices across 12 services with zero downtime'], source: 'Sourabh Bajaj (sb2nov/resume) — MIT License', overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineer-resume/gqxmqsvsbdjf' },
+      { id: 'fe', role: 'Frontend Engineer', category: 'Engineering', summary: 'Creative Frontend Engineer specializing in React ecosystems. Passionate about accessible, performant user interfaces.', skills: ['React', 'TypeScript', 'Next.js', 'CSS/Sass', 'Redux', 'GraphQL', 'Jest', 'Webpack', 'Storybook', 'Figma'], highlights: ['Built component library used across 5 product teams, reducing development time by 30%', 'Improved Core Web Vitals (LCP 2.1s → 1.2s) leading to 15% higher conversion', 'Implemented design system with 50+ reusable components documented in Storybook'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-template/ysrmnrwyrhpp' },
+      { id: 'be', role: 'Backend Engineer', category: 'Engineering', summary: 'Backend Engineer experienced in designing high-throughput APIs and data pipelines. Focused on reliability and performance.', skills: ['Node.js', 'Python', 'Go', 'PostgreSQL', 'MongoDB', 'Redis', 'AWS', 'Docker', 'GraphQL', 'Kafka', 'gRPC'], highlights: ['Architected payment system handling $50M+ monthly transaction volume with 99.99% uptime', 'Designed GraphQL API layer reducing frontend data fetching by 60%', 'Built distributed task queue processing 500K+ jobs daily'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineer-resume/gqxmqsvsbdjf' },
+      { id: 'fs', role: 'Full Stack Developer', category: 'Engineering', summary: 'Versatile Full Stack Developer experienced in building end-to-end web applications and SaaS platforms.', skills: ['JavaScript', 'TypeScript', 'React', 'Node.js', 'Python', 'PostgreSQL', 'AWS', 'Docker', 'MongoDB', 'Tailwind CSS', 'Git'], highlights: ['Built SaaS platform serving 10K+ users with React frontend and Node.js backend', 'Implemented real-time collaboration features using WebSockets and CRDTs', 'Designed CI/CD pipeline reducing deployment time from 2 hours to 12 minutes'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-professional-template-software-engineer/ttwtyxskrcsz' },
+      { id: 'ds', role: 'Data Scientist', category: 'Data & AI', summary: 'Data Scientist skilled in ML model development, statistical analysis, and building data pipelines for actionable insights.', skills: ['Python', 'R', 'SQL', 'TensorFlow', 'PyTorch', 'scikit-learn', 'Pandas', 'NumPy', 'Spark', 'Tableau', 'Docker'], highlights: ['Developed ML model predicting customer churn with 94% accuracy, saving $2M annually', 'Built automated A/B testing framework reducing experiment analysis time by 70%', 'Created interactive dashboards used by executive team for weekly KPI tracking'], overleaf_url: 'https://www.overleaf.com/latex/templates/data-science-tech-resume-template/zcdmpfxrzjhv' },
+      { id: 'mle', role: 'Machine Learning Engineer', category: 'Data & AI', summary: 'MLE focused on deploying and monitoring production ML systems at scale. Experience across the full ML lifecycle.', skills: ['Python', 'TensorFlow', 'PyTorch', 'MLflow', 'Kubeflow', 'AWS SageMaker', 'Docker', 'Kubernetes', 'Spark'], highlights: ['Deployed real-time inference pipeline serving 500K predictions/day with p99 latency <50ms', 'Built feature store unifying ML features across 8 teams, reducing duplication by 60%', 'Implemented model monitoring system detecting data drift within 5 minutes'], overleaf_url: 'https://www.overleaf.com/latex/templates/ats-friendly-technical-resume/yrhtcnjyzgsf' },
+      { id: 'aie', role: 'AI Engineer', category: 'Data & AI', summary: 'AI Engineer specializing in LLMs, RAG systems, and agent architectures. Building next-generation AI-powered products.', skills: ['Python', 'LangChain', 'OpenAI API', 'HuggingFace', 'TensorFlow', 'PyTorch', 'Docker', 'Weaviate', 'Redis', 'FastAPI'], highlights: ['Built RAG-based Q&A system processing 10K+ internal documents with 92% answer accuracy', 'Fine-tuned LLM for domain-specific code generation, improving developer velocity by 25%', 'Designed multi-agent orchestration framework for automated customer support workflows'], overleaf_url: 'https://www.overleaf.com/latex/templates/ats-friendly-technical-resume/yrhtcnjyzgsf' },
+      { id: 'de', role: 'Data Engineer', category: 'Data & AI', summary: 'Data Engineer experienced in building reliable data pipelines and warehouse solutions at petabyte scale.', skills: ['Python', 'SQL', 'Spark', 'Airflow', 'Kafka', 'dbt', 'Snowflake', 'BigQuery', 'AWS', 'Docker', 'Terraform'], highlights: ['Designed ETL pipeline processing 5TB+ daily data with 99.9% uptime SLA', 'Reduced data warehouse query costs by 45% through partitioning and materialized views', 'Migrated legacy on-premise data warehouse to cloud, saving $800K/year'], overleaf_url: 'https://www.overleaf.com/latex/templates/data-science-tech-resume-template/zcdmpfxrzjhv' },
+      { id: 'doe', role: 'DevOps Engineer', category: 'Cloud & Infrastructure', summary: 'DevOps Engineer with deep expertise in CI/CD, container orchestration, and cloud infrastructure automation.', skills: ['AWS', 'GCP', 'Azure', 'Docker', 'Kubernetes', 'Terraform', 'Ansible', 'Jenkins', 'Prometheus', 'Grafana', 'Linux'], highlights: ['Reduced deployment time from 45min to 6min with ArgoCD-based GitOps pipeline', 'Managed 200+ node Kubernetes cluster across 3 availability zones with 99.95% uptime', 'Automated infrastructure provisioning reducing new environment setup from 2 weeks to 2 hours'], overleaf_url: 'https://github.com/tarushjreddy/resume-template-format-overleaf' },
+      { id: 'ce', role: 'Cloud Engineer', category: 'Cloud & Infrastructure', summary: 'Cloud Engineer focused on architecting secure, cost-optimized multi-cloud infrastructure.', skills: ['AWS', 'GCP', 'Azure', 'Terraform', 'Docker', 'Kubernetes', 'CloudFormation', 'Python', 'Linux', 'Networking'], highlights: ['Migrated 200+ legacy servers to AWS saving $1.2M/year in infrastructure costs', 'Designed multi-region disaster recovery architecture with RTO < 15 minutes', 'Reduced cloud spend by 35% through right-sizing and reserved instance optimization'], overleaf_url: 'https://github.com/tarushjreddy/resume-template-format-overleaf' },
+      { id: 'sre', role: 'Site Reliability Engineer', category: 'Cloud & Infrastructure', summary: 'SRE championing reliability through automation, observability, and incident management best practices.', skills: ['Kubernetes', 'Docker', 'Prometheus', 'Grafana', 'Terraform', 'Python', 'Go', 'Linux', 'Helm'], highlights: ['Drove SLO achievement from 95% to 99.95% through systematic error budget enforcement', 'Built automated on-call escalation reducing MTTR from 45min to 12min', 'Implemented chaos engineering program reducing incident severity by 60%'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineer-resume/gqxmqsvsbdjf' },
+      { id: 'sec', role: 'Security Engineer', category: 'Security', summary: 'Security Engineer with expertise in application security, cloud security, and incident response.', skills: ['Python', 'Go', 'AWS', 'Kubernetes', 'Linux', 'Burp Suite', 'OWASP', 'SIEM', 'Splunk', 'Firewalls'], highlights: ['Discovered and remediated 50+ critical vulnerabilities across production systems', 'Built automated security scanning pipeline integrated into CI/CD, catching 95% of vulns pre-deploy', 'Led SOC 2 Type II compliance effort achieving zero findings in audit'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-professional-template-software-engineer/ttwtyxskrcsz' },
+      { id: 'pm', role: 'Product Manager', category: 'Product & Design', summary: 'Product Manager with 6+ years delivering SaaS products from ideation to launch. Data-driven and user-obsessed.', skills: ['Jira', 'Confluence', 'Figma', 'SQL', 'Amplitude', 'Mixpanel', 'A/B Testing', 'Agile', 'Roadmapping'], highlights: ['Launched 3 high-impact products driving $5M+ ARR in first year', 'Improved NPS from 32 to 68 through systematic user research and iterative design', 'Defined OKR framework adopted across entire product org of 40+ PMs'], overleaf_url: 'https://www.overleaf.com/latex/templates/awesome-cv/dfnvtnhzhhbm' },
+      { id: 'ux', role: 'UI/UX Designer', category: 'Product & Design', summary: 'UI/UX Designer creating intuitive, accessible experiences for web and mobile platforms.', skills: ['Figma', 'Sketch', 'Adobe XD', 'Framer', 'User Research', 'Prototyping', 'Design Systems', 'Typography', 'Motion Design'], highlights: ['Designed and maintained design system used by 50+ designers and developers', 'Increased user task completion rate by 35% through accessibility-focused redesign', 'Conducted 100+ user research sessions driving iterative product improvements'], overleaf_url: 'https://www.overleaf.com/latex/templates/awesome-cv/dfnvtnhzhbbm' },
+      { id: 'ios', role: 'Mobile Engineer (iOS)', category: 'Mobile', summary: 'iOS Engineer building polished, performant mobile applications using Swift and modern Apple frameworks.', skills: ['Swift', 'SwiftUI', 'UIKit', 'Xcode', 'Core Data', 'Alamofire', 'Firebase', 'Combine', 'App Store', 'CI/CD'], highlights: ['Published 3 apps with cumulative 500K+ downloads and 4.7+ star ratings', 'Optimized cold launch time from 4.2s to 0.8s through lazy loading and caching', 'Implemented CI/CD pipeline with GitHub Actions delivering weekly TestFlight builds'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineer-resume/gqxmqsvsbdjf' },
+      { id: 'and', role: 'Mobile Engineer (Android)', category: 'Mobile', summary: 'Android Engineer experienced in building robust, user-friendly apps with Kotlin and Jetpack Compose.', skills: ['Kotlin', 'Java', 'Android Studio', 'Jetpack Compose', 'MVVM', 'Dagger', 'Firebase', 'Gradle', 'Room', 'Material Design'], highlights: ['Developed banking app serving 2M+ active users with near-zero crash rate (0.02%)', 'Reduced APK size by 40% through resource optimization and ProGuard rules', 'Migrated legacy codebase from Java to Kotlin across 150K+ lines of code'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineer-resume/gqxmqsvsbdjf' },
+      { id: 'qa', role: 'Quality Assurance Engineer', category: 'Engineering', summary: 'QA Engineer skilled in test automation, performance testing, and building quality culture across dev teams.', skills: ['Selenium', 'Cypress', 'Jest', 'JUnit', 'Postman', 'TestRail', 'Jira', 'SQL', 'JavaScript', 'Python'], highlights: ['Built end-to-end test suite covering 90%+ of critical user journeys', 'Reduced production defects by 55% through shift-left testing strategy', 'Automated regression suite reducing test execution from 8 hours to 22 minutes'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineer-resume/gqxmqsvsbdjf' },
+      { id: 'sys', role: 'Systems Engineer', category: 'Engineering', summary: 'Systems Engineer focused on building reliable, high-performance distributed systems infrastructure.', skills: ['Linux', 'AWS', 'Python', 'Bash', 'Docker', 'Kubernetes', 'Ansible', 'Terraform', 'Nginx', 'Monitoring'], highlights: ['Architected HA infrastructure handling 100K+ concurrent users with 99.99% uptime', 'Automated server provisioning reducing deployment time from 4 hours to 8 minutes', 'Designed monitoring stack processing 10TB+ of logs daily with real-time alerting'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineering-resume/mcvwcrmddsyw' },
+      { id: 'emb', role: 'Embedded Systems Engineer', category: 'Engineering', summary: 'Embedded Systems Engineer with expertise in firmware development, real-time systems, and HW-SW integration.', skills: ['C', 'C++', 'Python', 'RTOS', 'Linux', 'ARM', 'Microcontroller', 'I2C', 'SPI', 'UART', 'FPGA'], highlights: ['Developed bootloader for IoT device fleet reducing field update time by 80%', 'Designed sensor fusion algorithm improving navigation accuracy by 35%', 'Optimized power consumption by 60% through RTOS task scheduling improvements'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineering-resume/mcvwcrmddsyw' },
+      { id: 'cv', role: 'Computer Vision Engineer', category: 'Data & AI', summary: 'Computer Vision Engineer building real-time image and video analysis systems using deep learning.', skills: ['Python', 'TensorFlow', 'PyTorch', 'OpenCV', 'YOLO', 'Docker', 'CUDA', 'ONNX', 'GStreamer', 'AWS'], highlights: ['Developed real-time object detection pipeline running at 60fps on edge devices', 'Built automated quality inspection system reducing defect escape rate by 90%', 'Deployed video analytics solution processing 1000+ streams concurrently'], overleaf_url: 'https://www.overleaf.com/latex/templates/ats-friendly-technical-resume/yrhtcnjyzgsf' },
+      { id: 'nlp', role: 'NLP Engineer', category: 'Data & AI', summary: 'NLP Engineer specializing in transformer models, text classification, and conversational AI systems.', skills: ['Python', 'PyTorch', 'HuggingFace', 'Transformers', 'spaCy', 'LangChain', 'Docker', 'Weaviate', 'FastAPI'], highlights: ['Built multilingual sentiment analysis system achieving 94% accuracy across 15 languages', 'Developed Q&A system reducing customer support response time by 65%', 'Fine-tuned BERT-based NER model for domain-specific entity extraction with F1 0.91'], overleaf_url: 'https://www.overleaf.com/latex/templates/ats-friendly-technical-resume/yrhtcnjyzgsf' },
+      { id: 'bc', role: 'Blockchain Developer', category: 'Engineering', summary: 'Blockchain Developer experienced in smart contract development, DeFi protocols, and distributed ledger technology.', skills: ['Solidity', 'JavaScript', 'TypeScript', 'web3.js', 'Ethers.js', 'Hardhat', 'React', 'Node.js', 'IPFS'], highlights: ['Developed DeFi smart contracts managing $10M+ in TVL with zero security incidents', 'Built NFT marketplace handling 50K+ transactions, optimizing gas costs by 30%', 'Audited 20+ smart contracts identifying 40+ vulnerabilities pre-deployment'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-template/ysrmnrwyrhpp' },
+      { id: 'plat', role: 'Platform Engineer', category: 'Cloud & Infrastructure', summary: 'Platform Engineer building internal developer platforms that accelerate delivery across engineering orgs.', skills: ['Kubernetes', 'Go', 'Docker', 'Terraform', 'GitHub Actions', 'ArgoCD', 'Crossplane', 'Backstage'], highlights: ['Built IDP used by 30+ teams, reducing new service setup from weeks to hours', 'Implemented golden path templates standardizing deployments across 100+ microservices', 'Reduced developer onboarding time from 2 weeks to 2 days through self-service platform'], overleaf_url: 'https://github.com/tarushjreddy/resume-template-format-overleaf' },
+      { id: 'em', role: 'Engineering Manager', category: 'Leadership', summary: 'Engineering Manager leading high-performing teams through technical strategy, mentorship, and delivery excellence.', skills: ['Agile', 'Project Management', 'System Design', 'Code Review', 'Mentoring', 'OKRs', 'Jira', 'Confluence'], highlights: ['Led team of 12 engineers delivering 3 major product releases on schedule with <5% defect rate', 'Established engineering standards adopted across entire organization of 80+ engineers', 'Improved team velocity by 40% through process improvements and eliminating bottlenecks'], overleaf_url: 'https://www.overleaf.com/latex/templates/awesome-cv/dfnvtnhzhbbm' },
+      { id: 'tpm', role: 'Technical Program Manager', category: 'Leadership', summary: 'TPM orchestrating cross-functional programs from planning through execution across multiple teams.', skills: ['Program Management', 'Agile', 'Jira', 'Risk Management', 'Stakeholder Mgmt', 'SQL', 'Confluence', 'Asana'], highlights: ['Drove 6-month cross-team initiative migrating 50+ teams and 200+ services with zero critical incidents', 'Reduced project delivery latency by 40% through improved dependency tracking and risk monitoring', 'Managed $10M+ program budget ensuring all milestones delivered on time and under budget'], overleaf_url: 'https://www.overleaf.com/latex/templates/awesome-cv/dfnvtnhzhbbm' },
+      { id: 'dba', role: 'Database Administrator', category: 'Engineering', summary: 'DBA ensuring database reliability, performance, and security across OLTP and OLAP workloads at scale.', skills: ['PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'Cassandra', 'AWS RDS', 'DynamoDB', 'Query Optimization', 'Replication'], highlights: ['Optimized slow queries reducing p99 latency from 2s to 50ms, improving application performance', 'Designed multi-region database replication strategy with RPO < 5 minutes', 'Migrated 50TB+ of data from on-premise to cloud with zero downtime'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineering-resume/mcvwcrmddsyw' },
+      { id: 'net', role: 'Network Engineer', category: 'Cloud & Infrastructure', summary: 'Network Engineer designing and maintaining secure, high-performance enterprise and cloud networks.', skills: ['Cisco', 'Juniper', 'AWS VPC', 'Terraform', 'BGP', 'OSPF', 'TCP/IP', 'Load Balancers', 'Firewalls', 'DNS'], highlights: ['Designed multi-region network topology supporting 10K+ endpoints with 99.99% availability', 'Reduced incident response time from 30min to 5min through automated monitoring and alerting', 'Cut network costs by 25% by redesigning data transfer architecture between regions'], overleaf_url: 'https://www.overleaf.com/latex/templates/software-engineering-resume/mcvwcrmddsyw' },
+      { id: 'tse', role: 'Technical Support Engineer', category: 'Engineering', summary: 'Technical Support Engineer bridging customers and engineering to resolve complex issues at scale.', skills: ['Linux', 'SQL', 'Python', 'Bash', 'APIs', 'Postman', 'Zendesk', 'Jira', 'Monitoring', 'Docker'], highlights: ['Resolved 2K+ complex support tickets with 95% CSAT score and <4hr avg response time', 'Built automated diagnostic tools reducing mean resolution time by 50%', 'Created internal knowledge base adopted by 20+ team members reducing escalations by 35%'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-professional-template-software-engineer/tswtyxskrcsz' },
+      { id: 'int', role: 'Engineering Intern', category: 'Internships', summary: 'Motivated CS student with strong fundamentals in data structures, algorithms, and full-stack development.', skills: ['JavaScript', 'Python', 'React', 'Java', 'SQL', 'Git', 'HTML/CSS', 'Node.js', 'Data Structures', 'Algorithms', 'OOP'], highlights: ['Developed production feature used by 10K+ users during internship at mid-size tech company', 'Won internal hackathon with AI-powered code review tool adopted by 2 engineering teams', 'Contributed 15+ PRs to open source project with 5K+ GitHub stars'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-for-freshers/qpvkfqjfycgg' },
+      { id: 'scrum', role: 'Scrum Master', category: 'Leadership', summary: 'Certified Scrum Master enabling high-performing teams through agile coaching and continuous improvement.', skills: ['Scrum', 'Kanban', 'Jira', 'Confluence', 'Agile', 'Facilitation', 'Conflict Resolution', 'Coaching', 'Lean'], highlights: ['Led agile transformation for 4 teams, improving velocity by 35% within 3 sprints', 'Facilitated 100+ sprint ceremonies with consistent 4.5/5 feedback scores', 'Coached 20+ team members in agile practices reducing blockers by 60%'], overleaf_url: 'https://www.overleaf.com/latex/templates/awesome-cv/dfnvtnhzhbbm' },
+      { id: 'csa', role: 'Cybersecurity Analyst', category: 'Security', summary: 'Cybersecurity Analyst experienced in vulnerability management, SOC operations, and threat intelligence.', skills: ['Python', 'SIEM', 'Splunk', 'Wireshark', 'Burp Suite', 'Nmap', 'Metasploit', 'Linux', 'OWASP Top 10', 'Incident Response'], highlights: ['Identified and mitigated critical data exposure vulnerability affecting 1M+ user records', 'Built automated incident playbook reducing mean detection time from 3 days to 15 minutes', 'Led tabletop exercises for executive team improving org-wide incident readiness score by 40%'], overleaf_url: 'https://www.overleaf.com/latex/templates/resume-professional-template-software-engineer/tswtyxskrcsz' },
+    ];
+    res.json({ templates });
+  }),
+);
+
+router.get(
   '/resume-builder',
   asyncHandler(async (req, res) => {
     const versions = await ResumeVersion.findAll({ where: { student_id: req.user._id }, order: [['version', 'DESC']], limit: 20 });
@@ -965,6 +1111,120 @@ router.get(
   asyncHandler(async (req, res) => {
     const version = await ResumeVersion.findOne({ where: { _id: req.params.id, student_id: req.user._id } });
     if (!version) throw notFound('Resume version not found');
+
+    const isLatex = req.query.format === 'latex';
+
+    if (isLatex) {
+      const sanitize = (s) => (s || '').replace(/&/g, '\\&').replace(/%/g, '\\%').replace(/_/g, '\\_').replace(/#/g, '\\#').replace(/\$/g, '\\$').replace(/~/g, '\\textasciitilde{}').replace(/\^/g, '\\textasciicircum{}');
+      const escape = sanitize;
+      const safeName = escape(req.user.name || 'Student');
+      const safeRole = escape(version.target_role || '');
+      const safePhone = escape(version.phone || '');
+      const safeEmail = escape(version.email || req.user.email || '');
+      const safeLinkedin = escape(version.linkedin || '');
+      const safeGithub = escape(version.github || '');
+      const safeLocation = escape(version.location || '');
+      const safeSummary = escape(version.summary || '');
+
+      const contactParts = [safePhone, safeEmail, safeLinkedin, safeGithub, safeLocation].filter(Boolean);
+      const contactLine = contactParts.join(' \\textbar{} ');
+
+      const safeSkills = (version.skills || []).map(escape).join(', ');
+
+      function toLatexItems(items = []) {
+        return items.filter(Boolean).map((item) => `\\resumeItem{${escape(item)}}`).join('\n');
+      }
+
+      function toLatexSections(sections = [], titleKey = 'title') {
+        return sections.filter((s) => s.title || (s.items || []).length).map((s) =>
+          `\\resumeSubheading\n  {${escape(s.title || '')}}{}\n  {}{}\n  \\resumeItemListStart\n${(s.items || []).filter(Boolean).map((item) => `    \\resumeItem{${escape(item)}}`).join('\n')}\n  \\resumeItemListEnd`
+        ).join('\n');
+      }
+
+      const tex = `%-------------------------
+% Resume in LaTeX
+% Generated by Edvols Resume Builder
+% Based on sb2nov/resume (MIT License)
+%-------------------------
+\\documentclass[letterpaper,11pt]{article}
+
+\\usepackage{latexsym}
+\\usepackage[empty]{fullpage}
+\\usepackage{titlesec}
+\\usepackage{marvosym}
+\\usepackage[usenames,dvipsnames]{color}
+\\usepackage{verbatim}
+\\usepackage{enumitem}
+\\usepackage[hidelinks]{hyperref}
+\\usepackage{fancyhdr}
+\\usepackage[english]{babel}
+\\usepackage{tabularx}
+\\input{glyphtounicode}
+
+\\pagestyle{fancy}
+\\fancyhf{}
+\\fancyfoot{}
+\\renewcommand{\\headrulewidth}{0pt}
+\\renewcommand{\\footrulewidth}{0pt}
+\\addtolength{\\oddsidemargin}{-0.5in}
+\\addtolength{\\evensidemargin}{-0.5in}
+\\addtolength{\\textwidth}{1in}
+\\addtolength{\\topmargin}{-.5in}
+\\addtolength{\\textheight}{1.0in}
+\\urlstyle{same}
+\\raggedbottom
+\\raggedright
+\\setlength{\\tabcolsep}{0in}
+\\titleformat{\\section}{\\vspace{-4pt}\\scshape\\raggedright\\large}{}{0em}{}[\\color{black}\\titlerule\\vspace{-5pt}]
+\\pdfgentounicode=1
+
+\\newcommand{\\resumeItem}[1]{\\item\\small{#1 \\vspace{-2pt}}}
+\\newcommand{\\resumeSubheading}[4]{\\vspace{-1pt}\\item\\begin{tabular*}{0.97\\textwidth}{l@{\\extracolsep{\\fill}}r}\\textbf{#1} & #2 \\\\\\textit{\\small #3} & \\textit{\\small #4} \\\\\\end{tabular*}\\vspace{-5pt}}
+\\renewcommand{\\labelitemii}{$\\circ$}
+\\newcommand{\\resumeItemListStart}{\\begin{itemize}}
+\\newcommand{\\resumeItemListEnd}{\\end{itemize}\\vspace{-5pt}}
+\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}[leftmargin=*,label={}]}
+\\newcommand{\\resumeSubHeadingListEnd}{\\end{itemize}}
+
+\\begin{document}
+
+%----------HEADING----------
+\\begin{tabular*}{\\textwidth}{l@{\\extracolsep{\\fill}}r}
+  \\textbf{\\Large ${safeName}} & ${safeEmail} \\\\
+  ${contactLine} & ${safeRole ? safeRole : ''} \\\\
+\\end{tabular*}
+
+%----------SUMMARY----------
+\\section{Professional Summary}
+\\resumeItemListStart
+\\resumeItem{${safeSummary}}
+\\resumeItemListEnd
+
+%----------EXPERIENCE----------
+${(version.experience || []).length ? '\\section{Experience}\n\\resumeSubHeadingListStart\n' + toLatexSections(version.experience, 'Experience') + '\n\\resumeSubHeadingListEnd' : ''}
+
+%----------EDUCATION----------
+${(version.education || []).length ? '\\section{Education}\n\\resumeSubHeadingListStart\n' + toLatexSections(version.education, 'Education') + '\n\\resumeSubHeadingListEnd' : ''}
+
+%----------PROJECTS----------
+${(version.projects || []).length ? '\\section{Projects}\n\\resumeSubHeadingListStart\n' + toLatexSections(version.projects, 'Projects') + '\n\\resumeSubHeadingListEnd' : ''}
+
+%----------SKILLS----------
+${safeSkills ? '\\section{Technical Skills}\n\\resumeItemListStart\n\\resumeItem{' + safeSkills + '}\n\\resumeItemListEnd' : ''}
+
+%----------CERTIFICATIONS----------
+${(version.certifications || []).length ? '\\section{Certifications}\n\\resumeItemListStart\n' + (version.certifications || []).map((c) => '\\resumeItem{' + escape(c) + '}').join('\n') + '\n\\resumeItemListEnd' : ''}
+
+%----------ACHIEVEMENTS----------
+${(version.achievements || []).length ? '\\section{Achievements}\n\\resumeSubHeadingListStart\n' + toLatexSections(version.achievements, 'Achievements') + '\n\\resumeSubHeadingListEnd' : ''}
+
+\\end{document}`;
+
+      res.setHeader('Content-Type', 'application/x-latex');
+      res.setHeader('Content-Disposition', `attachment; filename=resume_v${version.version}.tex`);
+      res.send(tex);
+      return;
+    }
 
     const pdf = await buildPdfBuffer((doc) => {
       const contact = [

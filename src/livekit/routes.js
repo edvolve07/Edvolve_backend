@@ -45,7 +45,8 @@ router.post('/rejoin-room', requireAuth, requireModuleAccess('communication'), a
 
 router.post('/create-room', requireAuth, requireModuleAccess('communication'), asyncHandler(async (req, res) => {
   const { category } = req.body || {};
-  const roomName = `interview-${uuidv4().slice(0, 8)}`;
+  const roomName = `comm-${uuidv4().slice(0, 8)}`;
+  const resolvedCategory = category || 'Everyday Conversation & Small Talk';
 
   await roomClient.createRoom({ name: roomName, emptyTimeout: 300 });
 
@@ -56,10 +57,9 @@ router.post('/create-room', requireAuth, requireModuleAccess('communication'), a
   participantToken.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
   const token = await participantToken.toJwt();
 
-  // Dispatch the interview-agent to the room
   dispatchClient.createDispatch(roomName, 'interview-agent', {
     metadata: JSON.stringify({
-      category: category || 'Tell Me About Yourself',
+      category: resolvedCategory,
       userIdentity: req.user._id,
     }),
   }).catch((err) => {
@@ -69,13 +69,13 @@ router.post('/create-room', requireAuth, requireModuleAccess('communication'), a
   res.json({
     room: roomName,
     token,
-    category: category || 'Tell Me About Yourself',
+    category: resolvedCategory,
   });
 }));
 
 router.post('/generate-scenario', asyncHandler(async (req, res) => {
   const { category } = req.body || {};
-  const scenario = await commAi.generateScenario(category || 'Tell Me About Yourself');
+  const scenario = await commAi.generateScenario(category || 'Everyday Conversation & Small Talk');
   res.json({ opening: scenario.opening });
 }));
 
@@ -83,13 +83,14 @@ router.post('/evaluate', asyncHandler(async (req, res) => {
   const { session_id, transcript, category, exchange_count, current_prompt } = req.body || {};
   if (!transcript) throw new HttpError(400, 'transcript is required');
 
+  const resolvedCategory = category || 'Everyday Conversation & Small Talk';
   let prompt = current_prompt || '';
   if (!prompt && exchange_count === 0) {
-    const scenario = await commAi.generateScenario(category || 'Tell Me About Yourself');
+    const scenario = await commAi.generateScenario(resolvedCategory);
     prompt = scenario.opening;
   }
 
-  const evaluation = await commAi.evaluateResponse(prompt, transcript, category);
+  const evaluation = await commAi.evaluateResponse(prompt, transcript, resolvedCategory);
   const next_exchange = exchange_count + 1;
   const is_last = next_exchange >= 6;
   const next_prompt = is_last ? '' : (evaluation.next_prompt || 'Can you tell me more about a specific example from your experience?');

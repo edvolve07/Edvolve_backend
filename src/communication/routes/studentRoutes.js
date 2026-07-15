@@ -23,6 +23,19 @@ const commAi = config.nvidiaApiKey ? nimService : aiService;
 const router = Router();
 
 const COMMUNICATION_CATEGORIES = [
+  'Everyday Conversation & Small Talk',
+  'Active Listening & Empathy',
+  'Assertive Communication',
+  'Conflict Resolution & Difficult Conversations',
+  'Persuasion & Influence',
+  'Public Speaking & Presentations',
+  'Networking & Professional Introductions',
+  'Giving & Receiving Feedback',
+  'Cross-Cultural Communication',
+  'Storytelling & Narrative Skills',
+  'Team Collaboration & Meetings',
+  'Client & Stakeholder Communication',
+  'Crisis Communication',
   'Tell Me About Yourself',
   'Behavioral Questions (STAR)',
   'Strengths & Weaknesses',

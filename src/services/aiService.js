@@ -245,7 +245,9 @@ Return ONLY valid JSON, no markdown:
   }
 
   async generateCommunicationScenario(category) {
-    const prompt = `You are an interview coach helping a student practice their communication skills for job interviews.
+    const isInterview = category.includes('Tell Me About') || category.includes('Behavioral') || category.includes('Strengths') || category.includes('Why This') || category.includes('Technical') || category.includes('Difficult') || category.includes('Career') || category.includes('Salary');
+    const prompt = isInterview
+      ? `You are an interview coach helping a student practice their communication skills for job interviews.
 
 Question Category: ${category}
 
@@ -256,15 +258,27 @@ Return ONLY valid JSON:
   "title": "A short label for this question type",
   "context": "A 1-2 sentence explanation of why interviewers ask this and what they look for",
   "opening": "The interview question itself, phrased naturally as an interviewer would say it"
+}`
+      : `You are a communication skills coach helping someone practice real-world communication scenarios.
+
+Scenario Category: ${category}
+
+Create a realistic communication scenario for this category. The scenario should feel like a natural situation someone would encounter in daily life or at work.
+
+Return ONLY valid JSON:
+{
+  "title": "A short label for this scenario type",
+  "context": "A 1-2 sentence explanation of why this communication skill matters and what to focus on",
+  "opening": "The conversation starter or situation prompt, phrased naturally as it would occur in real life"
 }`;
 
     try {
       const text = await this.generateContent(prompt, "communication_scenario");
       const result = JSON.parse(cleanJsonResponse(text));
       return {
-        title: result.title || `${category} Question`,
-        context: result.context || 'Interviewers ask this to assess your communication skills.',
-        opening: result.opening || 'Tell me about yourself.',
+        title: result.title || `${category} Scenario`,
+        context: result.context || 'Practice this communication skill to become more effective in real-world situations.',
+        opening: result.opening || 'Let\'s practice this communication scenario.',
       };
     } catch (error) {
       throw new HttpError(500, `Question generation failed: ${error.message}`);
@@ -272,7 +286,9 @@ Return ONLY valid JSON:
   }
 
   async evaluateCommunicationResponse(question, answer, category = 'General') {
-    const prompt = `You are a strict interview coach evaluating a candidate's response in a mock interview communication practice.
+    const isInterview = category.includes('Tell Me About') || category.includes('Behavioral') || category.includes('Strengths') || category.includes('Why This') || category.includes('Technical') || category.includes('Difficult') || category.includes('Career') || category.includes('Salary');
+    const prompt = isInterview
+      ? `You are a strict interview coach evaluating a candidate's response in a mock interview communication practice.
 
 Question Category: ${category}
 
@@ -313,6 +329,51 @@ Return ONLY valid JSON, no markdown:
   "feedback": "",
   "next_prompt": "",
   "real_world_tip": ""
+}`
+      : `You are a communication skills coach evaluating someone's response in a real-world communication practice session.
+
+Scenario Category: ${category}
+
+Scenario Prompt:
+${question}
+
+Person's Response:
+${answer}
+
+Evaluate the response specifically on general communication skills (0-10 each). Adjust emphasis based on category:
+1. clarity — how clear, articulate, and easy to understand the response is
+2. structure — logical flow of ideas
+3. conciseness — gets to the point without rambling or being too brief
+4. relevance — directly addresses the situation, doesn't go off-topic
+5. confidence_tone — sounds appropriate and well-calibrated for the context
+
+${category === 'Conflict Resolution & Difficult Conversations' ? 'For this category, weight "structure" and "confidence_tone" higher — look for empathy-first, solution-oriented approaches.' : ''}
+${category === 'Public Speaking & Presentations' ? 'For this category, weight "clarity" and "structure" higher — the response should be well-organized and engaging.' : ''}
+${category === 'Persuasion & Influence' ? 'For this category, weight "relevance" and "confidence_tone" higher — look for logical arguments and confident delivery.' : ''}
+${category === 'Active Listening & Empathy' ? 'For this category, weight "structure" and "relevance" higher — look for reflective listening and empathetic responses.' : ''}
+${category === 'Giving & Receiving Feedback' ? 'For this category, weight "structure" and "confidence_tone" higher — look for constructive, balanced feedback.' : ''}
+${category === 'Storytelling & Narrative Skills' ? 'For this category, weight "structure" and "clarity" higher — look for narrative arc and engaging delivery.' : ''}
+${category === 'Crisis Communication' ? 'For this category, weight "clarity" and "confidence_tone" higher — look for calm, clear, and reassuring communication.' : ''}
+
+Also provide:
+- strengths: 1-2 specific things done well in the response
+- improvements: 1-2 specific, actionable things to improve
+- feedback: One paragraph of coaching advice focusing on communication techniques
+- next_prompt: A natural follow-up prompt or the next logical scenario to practice
+- real_world_tip: One specific, actionable tip for how this response would be received in a real situation
+
+Return ONLY valid JSON, no markdown:
+{
+  "clarity": 0,
+  "structure": 0,
+  "conciseness": 0,
+  "relevance": 0,
+  "confidence_tone": 0,
+  "strengths": [],
+  "improvements": [],
+  "feedback": "",
+  "next_prompt": "",
+  "real_world_tip": ""
 }`;
 
     try {
@@ -330,7 +391,7 @@ Return ONLY valid JSON, no markdown:
       }
 
       if (typeof result.feedback !== "string" || !result.feedback.trim()) {
-        result.feedback = "Keep practicing to improve your interview communication skills.";
+        result.feedback = "Keep practicing to improve your communication skills.";
       }
 
       if (typeof result.next_prompt !== "string" || !result.next_prompt.trim()) {
@@ -338,7 +399,7 @@ Return ONLY valid JSON, no markdown:
       }
 
       if (typeof result.real_world_tip !== "string" || !result.real_world_tip.trim()) {
-        result.real_world_tip = "In a real interview, aim to be specific and provide concrete examples from your experience.";
+        result.real_world_tip = "In real situations, aim to be specific and provide concrete examples from your experience.";
       }
 
       return result;
@@ -348,27 +409,30 @@ Return ONLY valid JSON, no markdown:
   }
 
   async generateCommunicationReport(exchanges, category = 'General') {
-    const prompt = `Based on this interview communication practice session, create a comprehensive coaching report.
+    const isInterview = category.includes('Tell Me About') || category.includes('Behavioral') || category.includes('Strengths') || category.includes('Why This') || category.includes('Technical') || category.includes('Difficult') || category.includes('Career') || category.includes('Salary');
+    const contextLabel = isInterview ? 'interview communication' : 'communication';
+    const contextPlural = isInterview ? 'interviews' : 'situations';
+    const prompt = `Based on this ${contextLabel} practice session, create a comprehensive coaching report.
 
-Question Category: ${category}
+Category: ${category}
 
 Exchange data:
 ${JSON.stringify(exchanges, null, 2)}
 
 Return a JSON with the following structure:
 
-1. strengths: Array of 3-4 overall interview communication strengths demonstrated
-2. areas_to_improve: Array of 3-4 specific areas needing improvement in interview answers
-3. tips: Array of 4-5 actionable interview communication tips (e.g., use the STAR method, pause before answering, structure your response)
+1. strengths: Array of 3-4 overall ${contextLabel} strengths demonstrated
+2. areas_to_improve: Array of 3-4 specific areas needing improvement in ${contextLabel}
+3. tips: Array of 4-5 actionable ${contextLabel} tips
 4. category_insights: An object with:
-   - category_mastery: One-sentence assessment of how well the student handled this question category
-   - key_takeaway: The single most important thing to remember for this category in real interviews
+   - category_mastery: One-sentence assessment of how well the person handled this category
+   - key_takeaway: The single most important thing to remember for this category in real ${contextPlural}
    - recommended_focus: What to focus practice on for this category
-5. real_world_preparation: Array of 4-5 specific, actionable tips for real-world interviews based on this student's performance (e.g., "In a real interview, follow up your technical answer with a concrete project example")
+5. real_world_preparation: Array of 4-5 specific, actionable tips for real-world ${contextPlural} based on this person's performance
 6. competency_analysis: An object with:
-   - demonstrated_competencies: Array of competencies shown (e.g., ["Problem Solving", "Technical Knowledge", "Leadership"])
+   - demonstrated_competencies: Array of competencies shown (e.g., ["Active Listening", "Empathy", "Clarity", "Confidence"])
    - competencies_to_develop: Array of competencies that need development
-   - communication_style: Assessment of their communication style (e.g., "Direct and concise but could benefit from more structured storytelling")
+   - communication_style: Assessment of their communication style
 
 Return ONLY valid JSON:
 {
