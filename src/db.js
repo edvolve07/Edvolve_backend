@@ -18,6 +18,10 @@ export async function connectDatabase() {
     await pgConnect();
     console.log("Database connected (PostgreSQL)");
   } else {
+    if (config.isProduction) {
+      console.error('[FATAL] DATABASE_URL is not configured. Cannot start without a database.');
+      process.exit(1);
+    }
     console.warn("DATABASE_URL not configured");
   }
 }

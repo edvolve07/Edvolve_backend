@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 import { requireAuth } from '../middleware/auth.js';
-import { Admin, Student, Op } from '../../database/index.js';
+import { User, Op } from '../../database/index.js';
 import { findUserByEmail, findUserByPk } from '../utils/userUtils.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { HttpError, badRequest, locked, unauthorized } from '../utils/httpError.js';
@@ -42,6 +42,20 @@ function toSafeJSON(user) {
     email_verified: user.email_verified !== false,
     created_at: user.created_at,
     updated_at: user.updated_at,
+    subscription_id: user.subscription_id || null,
+    subscription_status: user.subscription_status || null,
+    journey_access: user.journey_access || 0,
+    current_level: user.current_level || 1,
+    current_interview: user.current_interview || 1,
+    journey_access_level: user.journey_access_level || 0,
+    current_interview_number: user.current_interview_number || 1,
+    completed_interviews: user.completed_interviews || 0,
+    total_interviews: user.total_interviews || 24,
+    overall_score: user.overall_score || 0,
+    readiness_score: user.readiness_score || 0,
+    journey_status: user.journey_status || 'not_started',
+    _enterprise_profile_id: user._enterprise_profile_id || null,
+    _individual_profile_id: user._individual_profile_id || null,
   };
 }
 
@@ -104,13 +118,56 @@ router.post(
     if (existing) throw badRequest('Email is already registered');
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await Admin.create({
+    const user = await User.create({
       name: name.trim(),
       email: normalizedEmail,
       password_hash: passwordHash,
       role: ROLES.MASTER_ADMIN,
       email_verified: true,
     });
+
+    res.status(201).json({
+      user: toSafeJSON(user),
+      token: signToken(user),
+      message: 'Account created successfully.',
+    });
+  }),
+);
+
+router.post(
+  '/individual-signup',
+  asyncHandler(async (req, res) => {
+    const { name, email, password, confirmPassword, plan_key } = req.body;
+    const errors = [];
+
+    if (!name || name.trim().length < 2) errors.push('Full name is required');
+    if (!email || !validateEmail(email)) errors.push('A valid email is required');
+    if (!password || password.length < 8) errors.push('Password must be at least 8 characters');
+    if (password !== confirmPassword) errors.push('Passwords do not match');
+    if (errors.length) throw badRequest('Validation failed', errors);
+    getJwtSecret();
+
+    const normalizedEmail = normalizeEmail(email);
+    const existing = await findUserByEmail(normalizedEmail);
+    if (existing) throw badRequest('Email is already registered');
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = await User.create({
+      name: name.trim(),
+      email: normalizedEmail,
+      password_hash: passwordHash,
+      role: 'individual_student',
+      email_verified: true,
+      must_change_password: false,
+      is_active: true,
+    });
+
+    const { getSequelize } = await import('../../database/index.js');
+    await getSequelize().query(
+      `INSERT INTO individual_students (_id, user_id, subscription_status, created_at, updated_at)
+       VALUES (gen_random_uuid(), :userId, 'inactive', NOW(), NOW())`,
+      { replacements: { userId: user._id } }
+    );
 
     res.status(201).json({
       user: toSafeJSON(user),
@@ -128,31 +185,36 @@ router.post(
     getJwtSecret();
 
     const normalizedEmail = normalizeEmail(email);
-    const user = await findUserByEmail(normalizedEmail);
-    if (!user) throw unauthorized('Invalid email or password');
+    const userRow = await User.findOne({ where: { email: normalizedEmail } });
+    if (!userRow) throw unauthorized('Invalid email or password');
 
-    const isBcryptHash = String(user.password_hash || '').startsWith('$2');
+    const isBcryptHash = String(userRow.password_hash || '').startsWith('$2');
     const valid = isBcryptHash
-      ? await bcrypt.compare(password, user.password_hash)
-      : user.password_salt
-        ? await verifyPassword(password, user.password_salt, user.password_hash)
+      ? await bcrypt.compare(password, userRow.password_hash)
+      : userRow.password_salt
+        ? await verifyPassword(password, userRow.password_salt, userRow.password_hash)
         : false;
     if (!valid) throw unauthorized('Invalid email or password');
-    if (user.is_active === false) throw locked();
+    if (userRow.is_active === false) throw locked();
 
     const configuredRole = roleForEmail(normalizedEmail);
+    let needsSave = false;
     if (!isBcryptHash) {
-      user.password_hash = await bcrypt.hash(password, 10);
-      user.password_salt = null;
+      userRow.password_hash = await bcrypt.hash(password, 10);
+      userRow.password_salt = null;
+      needsSave = true;
     }
 
-    if (configuredRole !== ROLES.STUDENT && user.role !== configuredRole) {
-      user.role = configuredRole;
+    if (configuredRole !== ROLES.STUDENT && userRow.role !== configuredRole) {
+      userRow.role = configuredRole;
+      needsSave = true;
     }
 
-    if (!isBcryptHash || user.changed('role')) {
-      await user.save();
+    if (needsSave) {
+      await userRow.save();
     }
+
+    const user = await import('../utils/userContext.js').then(m => m.buildUserContext(userRow._id));
 
     res.json({ user: toSafeJSON(user), token: signToken(user) });
   }),
@@ -169,7 +231,7 @@ router.post(
       ]);
     }
 
-    const user = await findUserByEmail(normalizedEmail);
+    const user = await User.findOne({ where: { email: normalizedEmail } });
     if (!user) {
       res.json(passwordResetResponse());
       return;
@@ -216,20 +278,12 @@ router.post(
     if (errors.length) throw badRequest('Validation failed', errors);
 
     const tokenHash = hashResetToken(token);
-    let user = await Admin.findOne({
+    const user = await User.findOne({
       where: {
         password_reset_token_hash: tokenHash,
         password_reset_expires_at: { [Op.gt]: new Date() },
       },
     });
-    if (!user) {
-      user = await Student.findOne({
-        where: {
-          password_reset_token_hash: tokenHash,
-          password_reset_expires_at: { [Op.gt]: new Date() },
-        },
-      });
-    }
 
     if (!user) {
       throw badRequest('Reset link is invalid or expired', [
@@ -273,16 +327,13 @@ router.put(
     if (errors.length) throw badRequest('Validation failed', errors);
 
     if (phone) {
-      const [existingAdmin, existingStudent] = await Promise.all([
-        Admin.findOne({ where: { phone, _id: { [Op.ne]: req.user._id } } }),
-        Student.findOne({ where: { phone, _id: { [Op.ne]: req.user._id } } }),
-      ]);
-      if (existingAdmin || existingStudent) {
+      const existingPhone = await User.findOne({ where: { phone, _id: { [Op.ne]: req.user._id } } });
+      if (existingPhone) {
         throw badRequest('Phone number is already registered', ['Phone number is already registered']);
       }
     }
 
-    const user = await findUserByPk(req.user._id);
+    const user = await User.findByPk(req.user._id);
     if (!user) throw unauthorized('User not found');
 
     user.name = name;
@@ -294,9 +345,11 @@ router.put(
     user.location = location;
     await user.save();
 
+    const updated = await import('../utils/userContext.js').then(m => m.buildUserContext(user._id));
+
     res.json({
       message: 'Profile updated successfully.',
-      user: toSafeJSON(user),
+      user: toSafeJSON(updated),
     });
   }),
 );
@@ -309,22 +362,13 @@ router.post(
     if (!token || !email) throw badRequest('Verification token and email are required');
 
     const tokenHash = hashResetToken(token);
-    let user = await Admin.findOne({
+    const user = await User.findOne({
       where: {
         email,
         email_verification_token: tokenHash,
         email_verification_expires_at: { [Op.gt]: new Date() },
       },
     });
-    if (!user) {
-      user = await Student.findOne({
-        where: {
-          email,
-          email_verification_token: tokenHash,
-          email_verification_expires_at: { [Op.gt]: new Date() },
-        },
-      });
-    }
     if (!user) throw badRequest('Verification link is invalid or expired');
 
     user.email_verified = true;
@@ -348,7 +392,7 @@ router.post(
     if (newPassword !== confirmPassword) errors.push('Passwords do not match');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const user = await findUserByPk(req.user._id);
+    const user = await User.findByPk(req.user._id);
     if (!user) throw unauthorized('User not found');
 
     const isBcryptHash = String(user.password_hash || '').startsWith('$2');
@@ -365,11 +409,12 @@ router.post(
     user.must_change_password = false;
     await user.save();
 
-    const token = signToken(user);
+    const updated = await import('../utils/userContext.js').then(m => m.buildUserContext(user._id));
+    const token = signToken(updated);
 
     res.json({
       message: 'Password has been changed successfully.',
-      user: toSafeJSON(user),
+      user: toSafeJSON(updated),
       token,
     });
   }),

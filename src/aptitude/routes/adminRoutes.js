@@ -3,12 +3,12 @@ import multer from 'multer';
 import PDFDocument from 'pdfkit';
 import XLSX from 'xlsx';
 import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
-import { Admin, Student, Assessment, AssessmentAttempt, ProctoringEvent, Question, StudentAnswer, StudentCertificate, InterviewReport, ResumeVersion, ProgrammingSubmission, ProgrammingProblem, Department, Op } from '../../database/index.js';
+import { User, Assessment, AssessmentAssignment, AssessmentDepartment, AssessmentAttempt, ProctoringEvent, Question, StudentAnswer, StudentCertificate, InterviewReport, ResumeVersion, ProgrammingSubmission, ProgrammingProblem, Department, Op } from '../../database/index.js';
 import { extractFileText } from '../services/fileTextService.js';
 import { generateAssessmentJson } from '../services/aiService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { CONCEPTS, DIFFICULTIES, STATUSES } from '../utils/constants.js';
-import { badRequest, notFound } from '../utils/httpError.js';
+import { badRequest, forbidden, notFound } from '../utils/httpError.js';
 import { toReviewQuestion, validateQuestions } from '../utils/questionValidation.js';
 import { ROLES } from '../utils/roles.js';
 import { validateFileType } from '../../utils/fileValidation.js';
@@ -16,6 +16,7 @@ import {
   isEmailServiceConfigured,
   sendAssessmentPublishedEmail,
 } from '../../services/emailService.js';
+import { buildStudentFilter, buildStudentWhere, buildAssessmentFilter } from '../utils/adminScope.js';
 
 const router = express.Router();
 const upload = multer({
@@ -23,11 +24,21 @@ const upload = multer({
   limits: { fileSize: 8 * 1024 * 1024 },
 });
 
-router.use(requireAuth, requireRole(ROLES.ADMIN));
+router.use(requireAuth, requireRole(ROLES.ADMIN, ROLES.MASTER_ADMIN));
 
 function parseNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+async function getAssignedStudentIds(user) {
+  const { studentIds } = await buildStudentFilter(user);
+  return studentIds || [];
+}
+
+async function getStudentFilterForUser(user) {
+  const { filter } = await buildStudentFilter(user);
+  return filter || { student_id: null };
 }
 
 function toUtcDate(value) {
@@ -66,6 +77,18 @@ function parseAssessmentPayload(body) {
     }
   }
 
+  let assignedStudentIds = null;
+  if (body.assigned_student_ids) {
+    try {
+      assignedStudentIds = typeof body.assigned_student_ids === 'string'
+        ? JSON.parse(body.assigned_student_ids)
+        : body.assigned_student_ids;
+      if (!Array.isArray(assignedStudentIds)) assignedStudentIds = null;
+    } catch {
+      assignedStudentIds = null;
+    }
+  }
+
   const errors = [];
   if (!title) errors.push('Assessment title is required');
   if (![...CONCEPTS, 'All Concepts'].includes(concept)) errors.push('Invalid concept');
@@ -77,9 +100,12 @@ function parseAssessmentPayload(body) {
   if (!STATUSES.includes(status)) errors.push('Invalid status');
   if (!['fast', 'ai'].includes(generationMode)) errors.push('Invalid generation mode');
   if (questionCount < 1) errors.push('Question count must be at least 1');
-  if (!['all', 'department'].includes(targetAudience)) errors.push('Invalid target audience');
+  if (!['all', 'department', 'individual'].includes(targetAudience)) errors.push('Invalid target audience');
   if (targetAudience === 'department' && (!departmentIds || departmentIds.length === 0)) {
     errors.push('At least one department must be selected when targeting departments');
+  }
+  if (targetAudience === 'individual' && (!assignedStudentIds || assignedStudentIds.length === 0)) {
+    errors.push('At least one student must be selected when targeting individual students');
   }
   if (errors.length) throw badRequest('Validation failed', errors);
 
@@ -98,7 +124,27 @@ function parseAssessmentPayload(body) {
     generation_mode: generationMode,
     target_audience: targetAudience,
     department_ids: departmentIds,
+    assigned_student_ids: assignedStudentIds,
   };
+}
+
+async function syncAssessmentJunctionTables(assessmentId, departmentIds, assignedStudentIds, assignedBy) {
+  if (departmentIds && Array.isArray(departmentIds)) {
+    for (const did of departmentIds) {
+      await AssessmentDepartment.findOrCreate({
+        where: { assessment_id: assessmentId, department_id: did },
+        defaults: { assessment_id: assessmentId, department_id: did },
+      });
+    }
+  }
+  if (assignedStudentIds && Array.isArray(assignedStudentIds)) {
+    for (const sid of assignedStudentIds) {
+      await AssessmentAssignment.findOrCreate({
+        where: { assessment_id: assessmentId, student_id: sid },
+        defaults: { assessment_id: assessmentId, student_id: sid, assigned_by: assignedBy },
+      });
+    }
+  }
 }
 
 function serializeAttemptAnalytics(attempt) {
@@ -180,6 +226,7 @@ async function serializeAssessment(assessment) {
     total_questions: totalQuestions,
     target_audience: assessment.target_audience || 'all',
     department_ids: assessment.department_ids || null,
+    assigned_student_ids: assessment.assigned_student_ids || null,
     created_at: assessment.created_at,
     updated_at: assessment.updated_at,
   };
@@ -197,15 +244,25 @@ async function notifyAssignedStudentsAssessmentPublished(assessment, admin) {
   }
 
   const studentWhere = {
-    assigned_admin: admin._id,
     is_active: { [Op.ne]: false },
   };
+
+  if (admin.role === ROLES.MASTER_ADMIN && assessment.target_audience === 'individual') {
+    studentWhere.role = 'individual_student';
+    if (Array.isArray(assessment.assigned_student_ids) && assessment.assigned_student_ids.length) {
+      studentWhere._id = { [Op.in]: assessment.assigned_student_ids };
+    }
+  } else if (admin.role === ROLES.MASTER_ADMIN) {
+    studentWhere.role = 'student';
+  } else {
+    studentWhere.assigned_admin = admin._id;
+  }
 
   if (assessment.target_audience === 'department' && Array.isArray(assessment.department_ids) && assessment.department_ids.length) {
     studentWhere.department_id = { [Op.in]: assessment.department_ids };
   }
 
-  const students = await Student.findAll({
+  const students = await User.findAll({
     where: studentWhere,
     attributes: ['name', 'email'],
   });
@@ -246,7 +303,7 @@ async function populateAttempts(attempts) {
   const studentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
   const assessmentIds = [...new Set(attempts.map((a) => a.assessment_id).filter(Boolean))];
   const [students, assessments] = await Promise.all([
-    Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+    User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
     Assessment.findAll({
       where: { _id: { [Op.in]: assessmentIds } },
       attributes: ['_id', 'title', 'concept', 'difficulty', 'total_marks', 'passing_marks', 'duration_minutes'],
@@ -264,7 +321,7 @@ async function populateAttempts(attempts) {
 const YEAR_LABELS = ['1st', '2nd', '3rd', '4th'];
 
 async function getStudentProfile(studentId) {
-  return Student.findOne({
+  return User.findOne({
     where: { _id: studentId },
     attributes: ['_id', 'name', 'email', 'phone', 'usn', 'department_id', 'year', 'modules_access', 'institutionId', 'assigned_admin', 'is_active', 'created_at'],
   });
@@ -327,16 +384,10 @@ router.get(
 
     const isDepartmentAdmin = req.user.admin_role === 'hod' && req.user.department_id;
 
-    const studentWhere = {};
-    if (isDepartmentAdmin) {
-      studentWhere.department_id = req.user.department_id;
-    } else if (req.user.institutionId) {
-      studentWhere.institutionId = req.user.institutionId;
-    } else {
-      studentWhere.assigned_admin = req.user._id;
-    }
+    const studentWhere = buildStudentWhere(req.user);
+    studentWhere.role = 'student';
 
-    const assignedStudents = await Student.findAll({
+    const assignedStudents = await User.findAll({
       where: studentWhere,
       attributes: ['_id', 'name', 'email', 'usn', 'department_id', 'year', 'modules_access', 'is_active'],
     });
@@ -346,8 +397,7 @@ router.get(
     let submissions = [], interviewReports = [];
 
     if (hasAptitude) {
-      const assessmentFilter = { is_deleted: { [Op.ne]: true } };
-      if (req.user.institutionId) assessmentFilter.institutionId = req.user.institutionId;
+      const assessmentFilter = buildAssessmentFilter(req.user);
       const attemptFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
       const aptitudeResults = await Promise.all([
         Assessment.count({ where: assessmentFilter }),
@@ -469,9 +519,16 @@ router.get(
 
     const student = await getStudentProfile(studentId);
     if (!student) throw notFound('Student not found');
+    if (student.role === 'individual_student') throw notFound('Student not found');
 
     const isDepartmentAdmin = req.user.admin_role === 'hod' && req.user.department_id;
     if (isDepartmentAdmin && student.department_id !== req.user.department_id) {
+      throw notFound('Student not found');
+    }
+    if (req.user.role === 'admin' && req.user.institutionId && student.institutionId !== req.user.institutionId) {
+      throw notFound('Student not found');
+    }
+    if (req.user.role === 'admin' && !req.user.institutionId && student.assigned_admin !== req.user._id) {
       throw notFound('Student not found');
     }
 
@@ -586,11 +643,10 @@ router.get(
   asyncHandler(async (req, res) => {
     const type = String(req.params.type || '');
     const format = String(req.query.format || 'xlsx').toLowerCase();
-    const assignedStudents = await Student.findAll({
-      where: { assigned_admin: req.user._id },
-      attributes: ['_id', 'name', 'email', 'is_active', 'updated_at'],
-    });
-    const assignedStudentIds = assignedStudents.map((student) => student._id);
+    const assignedStudentIds = await getAssignedStudentIds(req.user);
+    const assignedStudents = assignedStudentIds.length
+      ? await User.findAll({ where: { _id: { [Op.in]: assignedStudentIds } }, attributes: ['_id', 'name', 'email', 'is_active', 'updated_at'] })
+      : [];
     const assignedStudentIdStrings = assignedStudents.map((student) => student._id.toString());
     let rows = [];
     let title = 'Edvols Report';
@@ -801,16 +857,15 @@ router.patch(
 router.get(
   '/proctoring/events',
   asyncHandler(async (req, res) => {
-    const assignedStudents = await Student.findAll({ where: { assigned_admin: req.user._id }, attributes: ['_id'] });
-    const studentIds = assignedStudents.map((student) => student._id);
+    const studentFilter = await getStudentFilterForUser(req.user);
     const events = await ProctoringEvent.findAll({
-      where: studentIds.length ? { student_id: { [Op.in]: studentIds } } : { student_id: null },
+      where: studentFilter,
       order: [['occurred_at', 'DESC']],
       limit: 200,
     });
 
     const uniqueStudentIds = [...new Set(events.map((e) => e.student_id).filter(Boolean))];
-    const students = await Student.findAll({
+    const students = await User.findAll({
       where: { _id: { [Op.in]: uniqueStudentIds } },
       attributes: ['_id', 'name', 'email'],
     });
@@ -837,7 +892,11 @@ router.get(
 router.post(
   '/students/:studentId/certificates/:milestone',
   asyncHandler(async (req, res) => {
-    const student = await Student.findOne({ where: { _id: req.params.studentId, assigned_admin: req.user._id } });
+    const studentWhere = { _id: req.params.studentId };
+    if (req.user.role !== ROLES.MASTER_ADMIN) {
+      studentWhere.assigned_admin = req.user._id;
+    }
+    const student = await User.findOne({ where: studentWhere });
     if (!student) throw notFound('Student not found');
     const milestone = String(req.params.milestone || '');
     const titles = {
@@ -874,9 +933,7 @@ router.get(
   '/analytics/aptitude',
   requireModuleAccess('aptitude'),
   asyncHandler(async (req, res) => {
-    const assignedStudents = await Student.findAll({ where: { assigned_admin: req.user._id }, attributes: ['_id'] });
-    const assignedStudentIds = assignedStudents.map((s) => s._id);
-    const studentFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
+    const studentFilter = await getStudentFilterForUser(req.user);
 
     const attempts = await AssessmentAttempt.findAll({
       where: { ...studentFilter, status: 'submitted' },
@@ -929,9 +986,7 @@ router.get(
   '/analytics/interviews',
   requireModuleAccess('ai_interview'),
   asyncHandler(async (req, res) => {
-    const assignedStudents = await Student.findAll({ where: { assigned_admin: req.user._id }, attributes: ['_id'] });
-    const assignedStudentIdStrings = assignedStudents.map((s) => s._id.toString());
-    const reportFilter = assignedStudentIdStrings.length ? { student_id: { [Op.in]: assignedStudentIdStrings } } : { student_id: null };
+    const reportFilter = await getStudentFilterForUser(req.user);
 
     const interviewReports = await InterviewReport.findAll({
       where: reportFilter,
@@ -1017,9 +1072,12 @@ router.post(
       created_by: req.user._id,
       target_audience: config.target_audience,
       department_ids: config.department_ids,
+      assigned_student_ids: config.assigned_student_ids,
     });
 
     console.log(`Created assessment ${assessment.start_time} with title "${assessment.title}" and ${validation.questions.length} questions`);
+
+    await syncAssessmentJunctionTables(assessment._id, config.department_ids, config.assigned_student_ids, req.user._id);
 
     await Question.bulkCreate(
       validation.questions.map((question) => ({
@@ -1072,7 +1130,9 @@ router.post(
       created_by: req.user._id,
       target_audience: config.target_audience,
       department_ids: config.department_ids,
+      assigned_student_ids: config.assigned_student_ids,
     });
+    await syncAssessmentJunctionTables(assessment._id, config.department_ids, config.assigned_student_ids, req.user._id);
     const emailNotification = assessment.status === 'published'
       ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
       : null;
@@ -1125,6 +1185,12 @@ router.patch(
         : [];
       assessment.department_ids = ids.length ? ids : null;
     }
+    if (req.body.assigned_student_ids !== undefined) {
+      const ids = Array.isArray(req.body.assigned_student_ids)
+        ? req.body.assigned_student_ids
+        : [];
+      assessment.assigned_student_ids = ids.length ? ids : null;
+    }
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
         if (['start_time', 'end_time'].includes(key)) {
@@ -1137,6 +1203,17 @@ router.patch(
       }
     }
     await assessment.save();
+
+    if (req.body.department_ids !== undefined || req.body.assigned_student_ids !== undefined) {
+      if (req.body.department_ids !== undefined) {
+        await AssessmentDepartment.destroy({ where: { assessment_id: assessment._id } });
+      }
+      if (req.body.assigned_student_ids !== undefined) {
+        await AssessmentAssignment.destroy({ where: { assessment_id: assessment._id } });
+      }
+      await syncAssessmentJunctionTables(assessment._id, assessment.department_ids, assessment.assigned_student_ids, req.user._id);
+    }
+
     const emailNotification = previousStatus !== 'published' && assessment.status === 'published'
       ? await notifyAssignedStudentsAssessmentPublished(assessment, req.user)
       : null;
@@ -1242,23 +1319,26 @@ router.get(
       throw forbidden('You do not have access to this assessment');
     }
 
-    const studentQueryFilter = req.user.institutionId
-      ? { institutionId: req.user.institutionId }
-      : { assigned_admin: req.user._id };
-    const assignedStudents = await Student.findAll({ where: studentQueryFilter, attributes: ['_id'] });
-    const assignedStudentIds = assignedStudents.map((s) => s._id);
-    const attemptFilter = assignedStudentIds.length ? { student_id: { [Op.in]: assignedStudentIds } } : { student_id: null };
+    let attemptFilter = { assessment_id: assessment._id };
+    const { studentIds } = await buildStudentFilter(req.user);
+    if (studentIds) {
+      attemptFilter.student_id = { [Op.in]: studentIds };
+    } else if (req.user.role !== 'master_admin') {
+      attemptFilter.student_id = null;
+    }
 
     const attempts = await AssessmentAttempt.findAll({
-      where: { ...attemptFilter, assessment_id: assessment._id },
+      where: attemptFilter,
       order: [['submitted_at', 'DESC'], ['started_at', 'DESC']],
     });
 
     const uniqueStudentIds = [...new Set(attempts.map((a) => a.student_id).filter(Boolean))];
-    const students = await Student.findAll({
-      where: { _id: { [Op.in]: uniqueStudentIds } },
-      attributes: ['_id', 'name', 'email'],
-    });
+    const students = uniqueStudentIds.length
+      ? await User.findAll({
+          where: { _id: { [Op.in]: uniqueStudentIds } },
+          attributes: ['_id', 'name', 'email'],
+        })
+      : [];
     const studentMap = Object.fromEntries(students.map((s) => [s._id, s]));
     for (const attempt of attempts) {
       attempt.student_id = studentMap[attempt.student_id] || attempt.student_id;
@@ -1296,7 +1376,7 @@ router.patch(
       throw badRequest('Only in-progress attempts can be extended');
     }
 
-    const student = await Student.findByPk(attempt.student_id, { attributes: ['name', 'email'] });
+    const student = await User.findByPk(attempt.student_id, { attributes: ['name', 'email'] });
     attempt.student_id = student || attempt.student_id;
 
     attempt.extra_time_minutes = (attempt.extra_time_minutes || 0) + minutes;
@@ -1312,6 +1392,28 @@ router.patch(
         started_at: attempt.started_at,
       },
     });
+  }),
+);
+
+router.get(
+  '/individual-students',
+  requireRole('master_admin'),
+  asyncHandler(async (req, res) => {
+    const { search } = req.query;
+    const where = { role: 'individual_student' };
+    if (search) {
+      where[Op.or] = [
+        { name: { [Op.iLike]: `%${search}%` } },
+        { email: { [Op.iLike]: `%${search}%` } },
+      ];
+    }
+    const students = await User.findAll({
+      where,
+      attributes: ['_id', 'name', 'email', 'phone', 'is_active', 'created_at'],
+      order: [['name', 'ASC']],
+      raw: true,
+    });
+    res.json({ students });
   }),
 );
 

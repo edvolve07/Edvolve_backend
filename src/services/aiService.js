@@ -492,6 +492,129 @@ Return ONLY valid JSON:
     }
   }
 
+  async generateBlueprintFirstQuestion(resumeText, blueprint) {
+    const prompt = `${blueprint.ai_prompt}
+
+Candidate Resume:
+${resumeText.slice(0, 1500)}
+
+Based on the resume and the interview objective above, ask the FIRST question for this interview.
+
+Return ONLY the question text:`;
+
+    try {
+      const text = await this.generateContent(prompt, "blueprint_first_question");
+      return text.trim().replace(/^["']|["']$/g, "");
+    } catch (error) {
+      throw new HttpError(500, `Blueprint question generation failed: ${error.message}`);
+    }
+  }
+
+  async generateBlueprintNextQuestion(resumeText, history, blueprint) {
+    const conversation = history.slice(-5).map((turn) => {
+      return `Q: ${turn.question}\nA: ${(turn.answer || "").slice(0, 300)}\n`;
+    }).join("\n");
+
+    const prompt = `${blueprint.ai_prompt}
+
+Candidate Resume:
+${resumeText.slice(0, 1500)}
+
+Conversation history:
+${conversation}
+
+Continue the interview following the blueprint objective. Ask a question that advances the interview toward its goal.
+
+Return ONLY the question text:`;
+
+    try {
+      const text = await this.generateContent(prompt, "blueprint_next_question");
+      return text.trim().replace(/^["']|["']$/g, "");
+    } catch (error) {
+      throw new HttpError(500, `Blueprint next question generation failed: ${error.message}`);
+    }
+  }
+
+  async evaluateBlueprintAnswer(question, answer, blueprint, videoMetrics = null) {
+    const videoSection = videoMetrics?.quality_flag === "good"
+      ? `Video Analysis:
+- Eye contact: ${(Number(videoMetrics.eye_contact || 0) * 10).toFixed(1)}/10
+- Attention: ${(Number(videoMetrics.attention || 0) * 10).toFixed(1)}/10
+- Stability: ${(Number(videoMetrics.stability || 0) * 10).toFixed(1)}/10`
+      : 'Video Analysis: Not available.';
+
+    const criteria = Object.entries(blueprint.evaluation_criteria || {})
+      .map(([key, desc]) => `- ${key}: ${desc}`)
+      .join('\n');
+
+    const prompt = `You are evaluating a candidate's response in a structured placement interview.
+
+Interview: ${blueprint.title} (Level ${blueprint.level})
+Objective: ${blueprint.objective}
+
+Evaluation Criteria:
+${criteria}
+
+QUESTION:
+${question}
+
+CANDIDATE'S ANSWER:
+${answer}
+
+${videoSection}
+
+Scoring Rubric (0-10):
+10 = Exceptional | 8 = Strong | 6 = Adequate | 4 = Weak | 2 = Poor | 0 = No answer
+
+Evaluate on these dimensions (0-10 each):
+1. confidence
+2. body_language
+3. knowledge
+4. fluency
+5. skill_relevance
+
+Also provide:
+- strengths: 1-2 specific things done well
+- improvements: 1-2 specific, actionable things to improve
+- feedback: One paragraph of coaching advice
+- blueprint_score: 0-10 score based on the blueprint-specific criteria above
+
+Return ONLY valid JSON:
+{
+  "confidence": 0,
+  "body_language": 0,
+  "knowledge": 0,
+  "fluency": 0,
+  "skill_relevance": 0,
+  "strengths": [],
+  "improvements": [],
+  "feedback": "",
+  "blueprint_score": 0
+}`;
+
+    try {
+      const text = await this.generateContent(prompt, "blueprint_answer_evaluation");
+      const result = JSON.parse(cleanJsonResponse(text));
+
+      for (const key of ["confidence", "body_language", "knowledge", "fluency", "skill_relevance"]) {
+        result[key] = clampScore(result[key]);
+      }
+      result.blueprint_score = clampScore(result.blueprint_score);
+
+      for (const key of ["strengths", "improvements"]) {
+        if (!Array.isArray(result[key])) {
+          result[key] = result[key] ? [String(result[key])] : [];
+        }
+      }
+      if (typeof result.feedback !== "string" || !result.feedback.trim()) {
+        result.feedback = "No feedback generated.";
+      }
+      return result;
+    } catch (error) {
+      throw new HttpError(500, `Blueprint evaluation failed: ${error.message}`);
+    }
+  }
+
   async generateOverallReport(atsData, evaluations) {
     const prompt = `Based on the complete interview data below, create a comprehensive report summary.
 

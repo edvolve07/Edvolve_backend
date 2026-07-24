@@ -1,6 +1,6 @@
 import express from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { Admin, Student, Op, Institution, Department, Assessment, AssessmentAttempt, getSequelize } from '../../database/index.js';
+import { User, Op, Institution, Department, Assessment, AssessmentAttempt, InstitutionModule, getSequelize } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, notFound, forbidden } from '../utils/httpError.js';
 import { ROLES } from '../utils/roles.js';
@@ -20,6 +20,17 @@ function parseModules(body) {
     }
   }
   return Object.keys(modules).length ? modules : undefined;
+}
+
+async function syncInstitutionModules(institutionId, modules) {
+  if (!modules || typeof modules !== 'object') return;
+  for (const [name, enabled] of Object.entries(modules)) {
+    await InstitutionModule.upsert({
+      institution_id: institutionId,
+      module_name: name,
+      enabled: Boolean(enabled),
+    });
+  }
 }
 
 function serializeInstitution(inst) {
@@ -61,17 +72,17 @@ router.get(
 
     const [adminCounts, studentCounts] = await Promise.all([
       institutionIds.length
-        ? Admin.findAll({
+        ? User.findAll({
             attributes: ['institutionId', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
-            where: { institutionId: { [Op.in]: institutionIds } },
+            where: { institutionId: { [Op.in]: institutionIds }, role: 'admin' },
             group: ['institutionId'],
             raw: true,
           })
         : [],
       institutionIds.length
-        ? Student.findAll({
+        ? User.findAll({
             attributes: ['institutionId', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
-            where: { institutionId: { [Op.in]: institutionIds } },
+            where: { institutionId: { [Op.in]: institutionIds }, role: 'student' },
             group: ['institutionId'],
             raw: true,
           })
@@ -98,10 +109,10 @@ router.get(
     if (!institution) throw notFound('Institution not found');
 
     const [totalAdmins, totalStudents, admins, departments] = await Promise.all([
-      Admin.count({ where: { institutionId: institution._id } }),
-      Student.count({ where: { institutionId: institution._id } }),
-      Admin.findAll({
-        where: { institutionId: institution._id },
+      User.count({ where: { institutionId: institution._id, role: 'admin' } }),
+      User.count({ where: { institutionId: institution._id, role: 'student' } }),
+      User.findAll({
+        where: { institutionId: institution._id, role: 'admin' },
         attributes: ['_id', 'name', 'email', 'phone'],
         order: [['name', 'ASC']],
       }),
@@ -162,6 +173,7 @@ router.post(
       status: status === 'inactive' ? 'inactive' : 'active',
       created_by: req.user._id,
     });
+    await syncInstitutionModules(institution._id, modules);
 
     res.status(201).json({ institution: serializeInstitution(institution) });
   }),
@@ -203,10 +215,13 @@ router.patch(
     }
 
     await institution.save();
+    if (modulesUpdate) {
+      await syncInstitutionModules(institution._id, institution.modules);
+    }
 
     const [totalAdmins, totalStudents] = await Promise.all([
-      Admin.count({ where: { institutionId: institution._id } }),
-      Student.count({ where: { institutionId: institution._id } }),
+      User.count({ where: { institutionId: institution._id, role: 'admin' } }),
+      User.count({ where: { institutionId: institution._id, role: 'student' } }),
     ]);
 
     res.json({
@@ -222,8 +237,8 @@ router.delete(
     if (!institution) throw notFound('Institution not found');
 
     const [adminCount, studentCount] = await Promise.all([
-      Admin.count({ where: { institutionId: institution._id } }),
-      Student.count({ where: { institutionId: institution._id } }),
+      User.count({ where: { institutionId: institution._id, role: 'admin' } }),
+      User.count({ where: { institutionId: institution._id, role: 'student' } }),
     ]);
 
     if (adminCount > 0 || studentCount > 0) {
@@ -251,17 +266,17 @@ router.get(
       recentAdmins,
       recentStudents,
     ] = await Promise.all([
-      Admin.count({ where: { institutionId: institution._id } }),
-      Student.count({ where: { institutionId: institution._id } }),
+      User.count({ where: { institutionId: institution._id, role: 'admin' } }),
+      User.count({ where: { institutionId: institution._id, role: 'student' } }),
       Assessment.findAll({ where: { institutionId: institution._id }, attributes: ['_id'] }),
-      Admin.findAll({
-        where: { institutionId: institution._id },
+      User.findAll({
+        where: { institutionId: institution._id, role: 'admin' },
         attributes: ['_id', 'name', 'email', 'created_at'],
         order: [['created_at', 'DESC']],
         limit: 5,
       }),
-      Student.findAll({
-        where: { institutionId: institution._id },
+      User.findAll({
+        where: { institutionId: institution._id, role: 'student' },
         attributes: ['_id', 'name', 'email', 'created_at'],
         order: [['created_at', 'DESC']],
         limit: 5,
@@ -307,9 +322,10 @@ router.get(
     const institution = await Institution.findByPk(req.params.id);
     if (!institution) throw notFound('Institution not found');
 
-    const admins = await Admin.findAll({
+    const admins = await User.findAll({
       where: {
         institutionId: institution._id,
+        role: 'admin',
       },
       attributes: ['_id', 'name', 'email', 'phone', 'modules_access', 'is_active'],
       order: [['name', 'ASC']],
@@ -343,17 +359,17 @@ router.get(
 
     const [adminDeptCounts, studentDeptCounts] = await Promise.all([
       deptIds.length
-        ? Admin.findAll({
+        ? User.findAll({
             attributes: ['department_id', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
-            where: { department_id: { [Op.in]: deptIds } },
+            where: { department_id: { [Op.in]: deptIds }, role: 'admin' },
             group: ['department_id'],
             raw: true,
           })
         : [],
       deptIds.length
-        ? Student.findAll({
+        ? User.findAll({
             attributes: ['department_id', [sequelize.fn('COUNT', sequelize.col('_id')), 'count']],
-            where: { department_id: { [Op.in]: deptIds } },
+            where: { department_id: { [Op.in]: deptIds }, role: 'student' },
             group: ['department_id'],
             raw: true,
           })
@@ -409,8 +425,8 @@ router.delete(
     }
 
     const [adminCount, studentCount] = await Promise.all([
-      Admin.count({ where: { department_id: department._id } }),
-      Student.count({ where: { department_id: department._id } }),
+      User.count({ where: { department_id: department._id, role: 'admin' } }),
+      User.count({ where: { department_id: department._id, role: 'student' } }),
     ]);
     const userCount = adminCount + studentCount;
     if (userCount > 0) {

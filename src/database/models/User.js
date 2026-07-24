@@ -113,9 +113,18 @@ export const User = sequelize.define('User', {
     allowNull: false,
     defaultValue: 'student',
   },
+  status: {
+    type: DataTypes.STRING(20),
+    defaultValue: 'active',
+  },
   is_active: {
     type: DataTypes.BOOLEAN,
     defaultValue: true,
+  },
+  assigned_admin: {
+    type: DataTypes.UUID,
+    defaultValue: null,
+    allowNull: true,
   },
   auth_token: {
     type: DataTypes.STRING(255),

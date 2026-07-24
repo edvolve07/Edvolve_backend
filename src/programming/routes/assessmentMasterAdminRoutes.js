@@ -1,7 +1,7 @@
 import express from 'express';
 import { requireAuth, requireRole } from '../../aptitude/middleware/auth.js';
 import { ROLES } from '../../aptitude/utils/roles.js';
-import { ProgrammingAssessment, ProgrammingAssessmentProblem, ProgrammingAssessmentAttempt, ProgrammingAssessmentAnswer, Admin, Student, Op } from '../../database/index.js';
+import { ProgrammingAssessment, ProgrammingAssessmentProblem, ProgrammingAssessmentAttempt, ProgrammingAssessmentAnswer, User, Op } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { badRequest, notFound } from '../utils/httpError.js';
 import { DEFAULT_PRACTICE_LANGUAGES, LANGUAGE_IDS, LANGUAGES } from '../utils/constants.js';
@@ -30,7 +30,7 @@ router.get(
 
     const creatorIds = [...new Set(assessments.map((a) => a.created_by).filter(Boolean))];
     const creators = creatorIds.length > 0
-      ? await Admin.findAll({
+      ? await User.findAll({
           where: { _id: { [Op.in]: creatorIds } },
           attributes: ['_id', 'name', 'email'],
         })

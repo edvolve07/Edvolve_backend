@@ -32,5 +32,17 @@ export { CommunicationSession } from './models/CommunicationSession.js';
 export { CommunicationReport } from './models/CommunicationReport.js';
 export { CommunicationScenario } from './models/CommunicationScenario.js';
 export { AptitudeQuestion, AptitudeResult } from './models/AptitudeQuestion.js';
+export { JourneyBlueprint } from './models/JourneyBlueprint.js';
+export { StudentJourney } from './models/StudentJourney.js';
+export { JourneyInterview } from './models/JourneyInterview.js';
+export { Subscription } from './models/Subscription.js';
+export { PaymentTransaction } from './models/PaymentTransaction.js';
+export { EnterpriseStudent } from './models/EnterpriseStudent.js';
+export { IndividualStudent } from './models/IndividualStudent.js';
+export { Plan } from './models/Plan.js';
+export { AssessmentAssignment } from './models/AssessmentAssignment.js';
+export { AssessmentDepartment } from './models/AssessmentDepartment.js';
+export { InstitutionModule } from './models/InstitutionModule.js';
+export { HelpRequest } from './models/HelpRequest.js';
 
 export const Op = Sequelize.Op;

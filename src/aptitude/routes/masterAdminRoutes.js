@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import multer from 'multer';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { Admin, Student, Op, Institution, Department } from '../../database/index.js';
+import { User, Op, Institution, Department, getSequelize } from '../../database/index.js';
 import { config } from '../../config.js';
 import { aiService } from '../../services/aiService.js';
 import { summarizeAiUsage } from '../../services/aiUsageService.js';
@@ -232,23 +232,11 @@ function normalizeUploadedRole(value, fallback) {
 router.get(
   '/dashboard',
   asyncHandler(async (_req, res) => {
-    const [
-      totalAdmins,
-      totalStudents,
-      totalInstitutions,
-      recentAdmins,
-      recentStudents,
-    ] = await Promise.all([
-      Admin.count(),
-      Student.count(),
+    const [totalUsers, totalInstitutions, recentUsers] = await Promise.all([
+      User.count(),
       Institution.count(),
-      Admin.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
-      Student.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
+      User.findAll({ order: [['created_at', 'DESC']], limit: 8 }),
     ]);
-    const totalUsers = totalAdmins + totalStudents;
-    const recentUsers = [...recentAdmins, ...recentStudents]
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 8);
 
     res.json({
       totals: {
@@ -280,50 +268,38 @@ router.get(
     const adminId = String(req.query.admin_id || '').trim();
     const institutionId = String(req.query.institution_id || '').trim();
 
-    let users = [];
-    if (!role || role === 'student') {
-      const studentFilter = {};
-      if (adminId) studentFilter.assigned_admin = adminId;
-      if (institutionId) studentFilter.institutionId = institutionId;
-      if (query) {
-        studentFilter[Op.or] = [
-          { name: { [Op.iLike]: `%${query}%` } },
-          { email: { [Op.iLike]: `%${query}%` } },
-        ];
-      }
-      const students = await Student.findAll({ where: studentFilter, order: [['created_at', 'DESC']], limit });
-      users.push(...students);
+    const filter = {};
+    if (role) filter.role = role;
+    if (institutionId) filter.institutionId = institutionId;
+    if (query) {
+      filter[Op.or] = [
+        { name: { [Op.iLike]: `%${query}%` } },
+        { email: { [Op.iLike]: `%${query}%` } },
+      ];
     }
-    if (!role || role === 'admin' || role === 'master_admin') {
-      const adminFilter = {};
-      if (role && (role === 'admin' || role === 'master_admin')) adminFilter.role = role;
-      if (institutionId) adminFilter.institutionId = institutionId;
-      if (query) {
-        adminFilter[Op.or] = [
-          { name: { [Op.iLike]: `%${query}%` } },
-          { email: { [Op.iLike]: `%${query}%` } },
-        ];
-      }
-      const admins = await Admin.findAll({ where: adminFilter, order: [['created_at', 'DESC']], limit });
-      users.push(...admins);
-    }
-    users.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    users = users.slice(0, limit);
+    if (adminId) filter.assigned_admin = adminId;
 
-    const adminIds = users.map((u) => u.assigned_admin).filter(Boolean);
+    let users = await User.findAll({ where: filter, order: [['created_at', 'DESC']], limit });
+
     const institutionIds = users.map((u) => u.institutionId).filter(Boolean);
+    const adminIds = users.map((u) => u.assigned_admin).filter(Boolean);
+    const departmentIds = users.map((u) => u.department_id).filter(Boolean);
 
-    const [admins, institutions] = await Promise.all([
-      adminIds.length
-        ? Admin.findAll({ where: { _id: { [Op.in]: adminIds } }, attributes: ['_id', 'name', 'email'], raw: true })
-        : [],
+    const [institutions, adminUsers, departments] = await Promise.all([
       institutionIds.length
         ? Institution.findAll({ where: { _id: { [Op.in]: institutionIds } }, attributes: ['_id', 'name', 'code'], raw: true })
         : [],
+      adminIds.length
+        ? User.findAll({ where: { _id: { [Op.in]: adminIds } }, attributes: ['_id', 'name', 'email'], raw: true })
+        : [],
+      departmentIds.length
+        ? Department.findAll({ where: { _id: { [Op.in]: departmentIds } }, attributes: ['_id', 'name'], raw: true })
+        : [],
     ]);
 
-    const adminMap = new Map(admins.map((a) => [a._id, a]));
     const institutionMap = new Map(institutions.map((i) => [i._id, i]));
+    const adminMap = new Map(adminUsers.map((a) => [a._id, a]));
+    const departmentMap = new Map(departments.map((d) => [d._id, d]));
 
     res.json({
       users: users.map((u) => {
@@ -338,6 +314,10 @@ router.get(
           s.institution_name = inst.name || '';
           s.institution_code = inst.code || '';
         }
+        const dept = departmentMap.get(u.department_id);
+        if (dept) {
+          s.department_name = dept.name || '';
+        }
         return s;
       }),
     });
@@ -351,7 +331,7 @@ router.get(
     if (req.query.institutionId) {
       filter.institutionId = req.query.institutionId;
     }
-    const admins = await Admin.findAll({
+    const admins = await User.findAll({
       where: filter,
       attributes: ['_id', 'name', 'email', 'phone', 'organization', 'modules_access', 'institutionId'],
       order: [['name', 'ASC']],
@@ -421,11 +401,11 @@ router.post(
     }
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await Admin.findOne({ where: { email } });
+    const existingByEmail = await User.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await Admin.findOne({ where: { phone } });
+      const existingByPhone = await User.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
@@ -444,7 +424,7 @@ router.post(
       if (dept) departmentName = dept.name;
     }
 
-    const user = await Admin.create({
+    const user = await User.create({
       name,
       email,
       phone,
@@ -556,7 +536,7 @@ router.post(
         }
       }
 
-      const existingByEmail = await Admin.findOne({ where: { email } });
+      const existingByEmail = await User.findOne({ where: { email } });
       if (existingByEmail) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: email ${email} is already registered`);
@@ -564,7 +544,7 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await Admin.findOne({ where: { phone } });
+        const existingByPhone = await User.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
@@ -576,7 +556,7 @@ router.post(
       const passwordHash = await bcrypt.hash(tempPassword, 10);
 
       try {
-        const user = await Admin.create({
+        const user = await User.create({
           name,
           email,
           phone,
@@ -636,16 +616,19 @@ router.post(
     }
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const existingByEmail = await Student.findOne({ where: { email } });
+    const existingByEmail = await User.findOne({ where: { email } });
     if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const existingByPhone = await Student.findOne({ where: { phone } });
+      const existingByPhone = await User.findOne({ where: { phone } });
       if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
     if (usn) {
-      const existingByUsn = await Student.findOne({ where: { usn } });
+      const [[existingByUsn]] = await getSequelize().query(
+        `SELECT _id FROM enterprise_students WHERE usn = :usn LIMIT 1`,
+        { replacements: { usn } }
+      );
       if (existingByUsn) throw badRequest('USN is already registered', ['USN is already registered']);
     }
 
@@ -665,7 +648,7 @@ router.post(
     }
 
     if (assignedAdminId) {
-      const admin = await Admin.findByPk(assignedAdminId);
+      const admin = await User.findByPk(assignedAdminId);
       if (!admin || (admin.role !== 'admin' && admin.role !== 'master_admin')) {
         throw badRequest('Assigned admin not found', ['Specified admin does not exist']);
       }
@@ -678,7 +661,7 @@ router.post(
 
     const tempPassword = generateTempPassword(name);
 
-    const user = await Student.create({
+    const user = await User.create({
       name,
       email,
       phone,
@@ -693,6 +676,21 @@ router.post(
       password_hash: await bcrypt.hash(tempPassword, 10),
       must_change_password: true,
     });
+
+    await getSequelize().query(
+      `INSERT INTO enterprise_students (_id, user_id, institution_id, department_id, usn, year, assigned_admin, created_at, updated_at)
+       VALUES (gen_random_uuid(), :userId, :instId, :deptId, :usn, :year, :assignedAdmin, NOW(), NOW())`,
+      {
+        replacements: {
+          userId: user._id,
+          instId: effectiveInstitutionId || null,
+          deptId: departmentId || null,
+          usn: usn || null,
+          year: year || null,
+          assignedAdmin: assignedAdminId || null,
+        },
+      }
+    );
 
     let emailSent = false;
     if (isEmailServiceConfigured()) {
@@ -741,7 +739,7 @@ router.post(
     }
 
     if (assignedAdminId) {
-      const admin = await Admin.findByPk(assignedAdminId);
+      const admin = await User.findByPk(assignedAdminId);
       if (!admin || (admin.role !== 'admin' && admin.role !== 'master_admin')) {
         throw badRequest('Assigned admin not found', ['Specified admin does not exist']);
       }
@@ -808,7 +806,7 @@ router.post(
         }
       }
 
-      const existingByEmail = await Student.findOne({ where: { email } });
+      const existingByEmail = await User.findOne({ where: { email } });
       if (existingByEmail) {
         summary.skipped += 1;
         summary.errors.push(`Row ${rowNumber}: email ${email} is already registered`);
@@ -816,7 +814,7 @@ router.post(
       }
 
       if (phone) {
-        const existingByPhone = await Student.findOne({ where: { phone } });
+        const existingByPhone = await User.findOne({ where: { phone } });
         if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
@@ -825,7 +823,10 @@ router.post(
       }
 
       if (usn) {
-        const existingByUsn = await Student.findOne({ where: { usn } });
+        const [[existingByUsn]] = await getSequelize().query(
+          `SELECT _id FROM enterprise_students WHERE usn = :usn LIMIT 1`,
+          { replacements: { usn } }
+        );
         if (existingByUsn) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: USN ${usn} is already registered`);
@@ -836,7 +837,7 @@ router.post(
       const tempPassword = generateTempPassword(name);
 
       try {
-        const user = await Student.create({
+        const user = await User.create({
           name,
           email,
           phone,
@@ -851,6 +852,21 @@ router.post(
           password_hash: await bcrypt.hash(tempPassword, 10),
           must_change_password: true,
         });
+
+        await getSequelize().query(
+          `INSERT INTO enterprise_students (_id, user_id, institution_id, department_id, usn, year, assigned_admin, created_at, updated_at)
+           VALUES (gen_random_uuid(), :userId, :instId, :deptId, :usn, :year, :assignedAdmin, NOW(), NOW())`,
+          {
+            replacements: {
+              userId: user._id,
+              instId: effectiveInstitutionId || null,
+              deptId: departmentId || null,
+              usn: usn || null,
+              year: year || null,
+              assignedAdmin: assignedAdminId || null,
+            },
+          }
+        );
 
         if (emailConfigured) {
           sendAccountCreationEmail({ to: email, name, tempPassword })
@@ -917,23 +933,20 @@ router.post(
     if (phone && !validatePhone(phone)) errors.push('Phone number is invalid');
     if (errors.length) throw badRequest('Validation failed', errors);
 
-    const [existingByEmailAdmin, existingByEmailStudent] = await Promise.all([
-      Admin.findOne({ where: { email } }),
-      Student.findOne({ where: { email } }),
+    const [existingByEmail] = await Promise.all([
+      User.findOne({ where: { email } }),
     ]);
-    if (existingByEmailAdmin || existingByEmailStudent) throw badRequest('Email is already registered', ['Email is already registered']);
+    if (existingByEmail) throw badRequest('Email is already registered', ['Email is already registered']);
 
     if (phone) {
-      const [existingByPhoneAdmin, existingByPhoneStudent] = await Promise.all([
-        Admin.findOne({ where: { phone } }),
-        Student.findOne({ where: { phone } }),
+      const [existingByPhone] = await Promise.all([
+        User.findOne({ where: { phone } }),
       ]);
-      if (existingByPhoneAdmin || existingByPhoneStudent) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
+      if (existingByPhone) throw badRequest('Phone number is already registered', ['Phone number is already registered']);
     }
 
     const effectivePassword = password.length >= 8 ? password : generateTempPassword(name);
-    const Model = role === 'student' ? Student : Admin;
-    const user = await Model.create({
+    const user = await User.create({
       name,
       email,
       phone,
@@ -944,6 +957,14 @@ router.post(
       password_hash: await bcrypt.hash(effectivePassword, 10),
       must_change_password: true,
     });
+
+    if (role === 'student') {
+      await getSequelize().query(
+        `INSERT INTO enterprise_students (_id, user_id, created_at, updated_at)
+         VALUES (gen_random_uuid(), :userId, NOW(), NOW())`,
+        { replacements: { userId: user._id } }
+      );
+    }
 
     let emailSent = false;
     if (isEmailServiceConfigured()) {
@@ -1030,12 +1051,7 @@ router.post(
         continue;
       }
 
-      let existing = await Admin.findOne({ where: { email } });
-      let existingModel = 'Admin';
-      if (!existing) {
-        existing = await Student.findOne({ where: { email } });
-        existingModel = 'Student';
-      }
+      let existing = await User.findOne({ where: { email } });
       if (existing) {
         if (existing._id === req.user._id && role !== ROLES.MASTER_ADMIN) {
           summary.skipped += 1;
@@ -1055,11 +1071,8 @@ router.post(
       }
 
       if (phone) {
-        const [existingByPhoneAdmin, existingByPhoneStudent] = await Promise.all([
-          Admin.findOne({ where: { phone } }),
-          Student.findOne({ where: { phone } }),
-        ]);
-        if (existingByPhoneAdmin || existingByPhoneStudent) {
+        const existingByPhone = await User.findOne({ where: { phone } });
+        if (existingByPhone) {
           summary.skipped += 1;
           summary.errors.push(`Row ${rowNumber}: phone ${phone} is already registered`);
           continue;
@@ -1067,8 +1080,7 @@ router.post(
       }
 
       const effectivePassword = password.length >= 8 ? password : generateTempPassword(name);
-      const Model = role === 'student' ? Student : Admin;
-      const user = await Model.create({
+      const user = await User.create({
         name,
         email,
         phone,
@@ -1079,6 +1091,14 @@ router.post(
         password_hash: await bcrypt.hash(effectivePassword, 10),
         must_change_password: true,
       });
+
+      if (role === 'student') {
+        await getSequelize().query(
+          `INSERT INTO enterprise_students (_id, user_id, created_at, updated_at)
+           VALUES (gen_random_uuid(), :userId, NOW(), NOW())`,
+          { replacements: { userId: user._id } }
+        );
+      }
 
       if (emailConfigured) {
         sendAccountCreationEmail({ to: email, name, tempPassword: effectivePassword })
@@ -1103,8 +1123,7 @@ router.patch(
       throw forbidden('You cannot remove your own master admin access');
     }
 
-    let user = await Admin.findByPk(req.params.id);
-    if (!user) user = await Student.findByPk(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.role = role;
@@ -1123,15 +1142,14 @@ router.patch(
     const valid = modules.every((m) => MODULE_OPTIONS.includes(m));
     if (!valid) throw badRequest('Invalid module', ['Valid modules: ai_interview, aptitude, programming, both']);
 
-    let user = await Admin.findByPk(req.params.id);
-    if (!user) user = await Student.findByPk(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     const normalizedModules = modules.includes('both') ? ['both'] : modules;
     user.modules_access = normalizedModules;
     await user.save();
 
-    await Student.update(
+    await User.update(
       { modules_access: normalizedModules },
       { where: { assigned_admin: user._id } },
     );
@@ -1147,15 +1165,14 @@ router.patch(
       throw forbidden('You cannot revoke your own access');
     }
 
-    let user = await Admin.findByPk(req.params.id);
-    if (!user) user = await Student.findByPk(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.is_active = false;
     await user.save();
 
     if (user.role === ROLES.ADMIN) {
-      await Student.update(
+      await User.update(
         { is_active: false },
         { where: { assigned_admin: user._id } },
       );
@@ -1172,8 +1189,7 @@ router.patch(
       throw forbidden('You cannot restore your own access');
     }
 
-    let user = await Admin.findByPk(req.params.id);
-    if (!user) user = await Student.findByPk(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
     user.is_active = true;
@@ -1190,15 +1206,10 @@ router.delete(
       throw forbidden('You cannot delete your own account');
     }
 
-    let user = await Admin.findByPk(req.params.id);
-    if (!user) user = await Student.findByPk(req.params.id);
+    const user = await User.findByPk(req.params.id);
     if (!user) throw notFound('User not found');
 
-    if (user.role === 'student') {
-      await Student.destroy({ where: { _id: user._id } });
-    } else {
-      await Admin.destroy({ where: { _id: user._id } });
-    }
+    await User.destroy({ where: { _id: user._id } });
     res.status(204).end();
   }),
 );

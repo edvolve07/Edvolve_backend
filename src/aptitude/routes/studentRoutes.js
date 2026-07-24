@@ -1,6 +1,7 @@
 import express from 'express';
 import PDFDocument from 'pdfkit';
 import { requireAuth, requireModuleAccess, requireRole } from '../middleware/auth.js';
+import { ROLES } from '../utils/roles.js';
 import {
   Op,
   Assessment,
@@ -24,7 +25,7 @@ import { INVALID_PROBLEM_TITLE_PATTERN } from '../../programming/utils/problemVi
 
 const router = express.Router();
 
-router.use(requireAuth, requireRole('student'));
+router.use(requireAuth, requireRole(ROLES.STUDENT, ROLES.INDIVIDUAL_STUDENT));
 
 async function serializeAssessment(assessment) {
   const totalQuestions = await Question.count({
@@ -52,12 +53,29 @@ async function serializeAssessment(assessment) {
     total_questions: totalQuestions,
     target_audience: assessment.target_audience || 'all',
     department_ids: assessment.department_ids || null,
+    assigned_student_ids: assessment.assigned_student_ids || null,
   };
 }
-function ensureAvailable(assessment) {
+function ensureAvailable(assessment, student) {
   const now = new Date();
   if (assessment.is_deleted) throw forbidden('Assessment is no longer available');
   if (assessment.status !== 'published') throw forbidden('Assessment is not published');
+
+  if (student?.institutionId && assessment.institutionId && assessment.institutionId.toString() !== student.institutionId.toString()) {
+    throw forbidden('Assessment is not available in your institution');
+  }
+  if (student?.role === 'student' && student?.department_id && assessment.department_ids?.length) {
+    if (!assessment.department_ids.includes(student.department_id)) {
+      throw forbidden('Assessment is not available for your department');
+    }
+  }
+  if (student?.role === 'individual_student' && assessment.target_audience === 'individual') {
+    if (Array.isArray(assessment.assigned_student_ids) && assessment.assigned_student_ids.length > 0) {
+      if (!assessment.assigned_student_ids.includes(student._id)) {
+        throw forbidden('Assessment is not assigned to you');
+      }
+    }
+  }
 
  const subtract530 = (date) => {
     if (!date) return null;
@@ -545,8 +563,18 @@ router.get(
     };
 
     if (hasAptitude) {
+      const assessmentBaseFilter = { status: 'published', is_deleted: { [Op.ne]: true } };
+      if (req.user.institutionId) {
+        assessmentBaseFilter.institutionId = req.user.institutionId;
+      }
+      if (req.user.role === 'student' && req.user.department_id) {
+        assessmentBaseFilter[Op.or] = [
+          { department_ids: null },
+          { department_ids: { [Op.contains]: [req.user.department_id] } },
+        ];
+      }
       const aptitudeResults = await Promise.all([
-        Assessment.count({ where: { status: 'published', is_deleted: { [Op.ne]: true } } }),
+        Assessment.count({ where: assessmentBaseFilter }),
         AssessmentAttempt.count({ where: { student_id: req.user._id, status: 'submitted' } }),
         AssessmentAttempt.findAll({ where: { student_id: req.user._id, status: 'submitted' } }),
         AssessmentAttempt.findAll({
@@ -555,7 +583,7 @@ router.get(
           limit: 5,
         }),
         Assessment.findOne({
-          where: { status: 'published', is_deleted: { [Op.ne]: true } },
+          where: assessmentBaseFilter,
           order: [['start_time', 'ASC'], ['created_at', 'DESC']],
         }),
       ]);
@@ -1420,7 +1448,18 @@ router.get(
       filter.institutionId = req.user.institutionId;
     }
 
-    if (req.user.department_id) {
+    if (req.user.role === 'individual_student') {
+      filter[Op.or] = [
+        { target_audience: { [Op.or]: ['all', null] } },
+        {
+          target_audience: 'individual',
+          [Op.or]: [
+            { assigned_student_ids: null },
+            { assigned_student_ids: { [Op.contains]: [req.user._id] } },
+          ],
+        },
+      ];
+    } else if (req.user.department_id) {
       const deptId = String(req.user.department_id);
       filter[Op.or] = [
         { target_audience: { [Op.or]: ['all', null] } },
@@ -1444,7 +1483,7 @@ router.post(
   asyncHandler(async (req, res) => {
     const assessment = await Assessment.findByPk(req.params.id);
     if (!assessment || assessment.is_deleted) throw notFound('Assessment not found');
-    ensureAvailable(assessment);
+    ensureAvailable(assessment, req.user);
 
     const existingSubmitted = await AssessmentAttempt.findOne({
       where: {

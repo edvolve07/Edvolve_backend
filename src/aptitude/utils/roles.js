@@ -1,5 +1,6 @@
 export const ROLES = {
   STUDENT: 'student',
+  INDIVIDUAL_STUDENT: 'individual_student',
   ADMIN: 'admin',
   MASTER_ADMIN: 'master_admin',
 };
@@ -45,5 +46,6 @@ export function roleForEmail(email) {
 export function roleLabel(role) {
   if (role === ROLES.MASTER_ADMIN) return 'Master Admin';
   if (role === ROLES.ADMIN) return 'Admin';
+  if (role === ROLES.INDIVIDUAL_STUDENT) return 'Individual Student';
   return 'Student';
 }

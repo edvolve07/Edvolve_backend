@@ -1,6 +1,6 @@
 import express from 'express';
 import { requireAuth, requireRole } from '../../aptitude/middleware/auth.js';
-import { Op, getSequelize, Student, ProgrammingProblem, ProgrammingSubmission } from '../../database/index.js';
+import { Op, getSequelize, User, ProgrammingProblem, ProgrammingSubmission } from '../../database/index.js';
 import { sanitizeStudentSubmissionError } from '../utils/studentResultSerializer.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { DIFFICULTIES, STATUSES, CONCEPTS, DEFAULT_PRACTICE_LANGUAGES, LANGUAGES } from '../utils/constants.js';
@@ -266,7 +266,7 @@ router.get(
     const problemIds = [...new Set(submissions.map((s) => s.problem_id).filter(Boolean))];
 
     const [students, problems] = await Promise.all([
-      Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
 
@@ -311,7 +311,7 @@ router.get(
     let student = null;
     let problem = null;
     if (submission.student_id) {
-      student = await Student.findByPk(submission.student_id, { attributes: ['name', 'email'] });
+      student = await User.findByPk(submission.student_id, { attributes: ['name', 'email'] });
     }
     if (submission.problem_id) {
       problem = await ProgrammingProblem.findByPk(submission.problem_id, { attributes: ['title', 'difficulty', 'concept'] });
@@ -369,7 +369,7 @@ router.get(
     const problemIds = [...new Set(recentSubmissions.map((s) => s.problem_id).filter(Boolean))];
 
     const [students, problems] = await Promise.all([
-      Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
 

@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import cookieParser from 'cookie-parser';
 import { config, ALLOWED_ORIGINS } from "./config.js";
 import { closeDatabase, collections, connectDatabase } from "./db.js";
+import bcrypt from "bcryptjs";
 import { hashPassword, verifyPassword, createAuthToken, validateEmail, validatePassword } from "./utils/auth.js";
 import { apiLimiter, strictLimiter } from "./middleware/rateLimiter.js";
 import authRoutes from "./aptitude/routes/authRoutes.js";
@@ -25,6 +26,9 @@ import assessmentMasterAdminRoutes from "./programming/routes/assessmentMasterAd
 import communicationStudentRoutes from "./communication/routes/studentRoutes.js";
 import communicationAdminRoutes from "./communication/routes/adminRoutes.js";
 import livekitRoutes from "./livekit/routes.js";
+import mentorshipRoutes from "./mentorship/routes.js";
+import subscriptionRoutes from "./subscription/routes.js";
+import helpRoutes from "./help/routes.js";
 import { getCodeRunnerHealth } from "./programming/services/executionService.js";
 import { aiService } from "./services/aiService.js";
 import { extractTextFromPdf } from "./services/resumeParser.js";
@@ -42,7 +46,8 @@ import { HttpError, asyncHandler } from "./utils/httpError.js";
 import { requireAuth, requireModuleAccess, requireRole } from "./aptitude/middleware/auth.js";
 import { formatDisplayName } from "./aptitude/utils/nameFormat.js";
 import { validateFileType } from "./utils/fileValidation.js";
-import { Op, InterviewSession, InterviewReport, Admin, Student, AptitudeQuestion, AptitudeResult, getSequelize, syncDatabase } from "./database/index.js";
+import { buildUserContext } from "./aptitude/utils/userContext.js";
+import { Op, User, InterviewSession, InterviewReport, AptitudeQuestion, AptitudeResult, getSequelize, syncDatabase } from "./database/index.js";
 
 const app = express();
 const upload = multer({
@@ -56,7 +61,7 @@ const ALLOWED_ORIGINS_SET = new Set(ALLOWED_ORIGINS);
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || ALLOWED_ORIGINS_SET.has(origin)) return cb(null, true);
-    cb(null, origin);
+    cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -243,7 +248,7 @@ app.post("/api/signup", strictLimiter, asyncHandler(async (req, res) => {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   try {
-    const result = await Student.create({
+    const result = await User.create({
       email: normalizedEmail,
       name: displayName,
       password_hash: hash,
@@ -251,6 +256,7 @@ app.post("/api/signup", strictLimiter, asyncHandler(async (req, res) => {
       auth_token: authToken,
       auth_expires_at: expiresAt,
       is_active: true,
+      role: 'student',
     });
 
     res.status(201).json({
@@ -278,36 +284,37 @@ app.post("/api/login", asyncHandler(async (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  let user = await Student.findOne({ where: { email: normalizedEmail } });
-  if (!user) {
-    user = await Admin.findOne({ where: { email: normalizedEmail } });
-  }
-
-  if (!user) {
+  const userRow = await User.findOne({ where: { email: normalizedEmail } });
+  if (!userRow) {
     throw new HttpError(401, "Invalid email or password");
   }
 
-  const isValid = await verifyPassword(password, user.password_salt, user.password_hash);
+  const isBcryptHash = String(userRow.password_hash || '').startsWith('$2');
+  const isValid = isBcryptHash
+    ? await bcrypt.compare(password, userRow.password_hash)
+    : userRow.password_salt
+      ? await verifyPassword(password, userRow.password_salt, userRow.password_hash)
+      : false;
 
   if (!isValid) {
     throw new HttpError(401, "Invalid email or password");
   }
 
-  if (user.is_active === false) {
+  if (userRow.is_active === false) {
     throw new HttpError(403, "Account is deactivated");
   }
 
   const authToken = createAuthToken();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  user.auth_token = authToken;
-  user.auth_expires_at = expiresAt;
-  await user.save();
+  userRow.auth_token = authToken;
+  userRow.auth_expires_at = expiresAt;
+  await userRow.save();
 
   res.json({
     user: {
-      user_id: user._id,
-      email: user.email,
-      name: user.name || ""
+      user_id: userRow._id,
+      email: userRow.email,
+      name: userRow.name || ""
     },
     access_token: authToken,
     expires_at: expiresAt
@@ -322,34 +329,26 @@ app.get("/api/me", asyncHandler(async (req, res) => {
     throw new HttpError(401, "Missing or invalid authorization header");
   }
 
-  let user = await Student.findOne({
+  const userRow = await User.findOne({
     where: {
       auth_token: token,
       auth_expires_at: { [Op.gt]: new Date() }
     }
   });
-  if (!user) {
-    user = await Admin.findOne({
-      where: {
-        auth_token: token,
-        auth_expires_at: { [Op.gt]: new Date() }
-      }
-    });
-  }
 
-  if (!user) {
+  if (!userRow) {
     throw new HttpError(401, "Invalid or expired auth token");
   }
 
-  if (user.is_active === false) {
+  if (userRow.is_active === false) {
     throw new HttpError(403, "Account is deactivated");
   }
 
   res.json({
     user: {
-      user_id: user._id,
-      email: user.email,
-      name: user.name || ""
+      user_id: userRow._id,
+      email: userRow.email,
+      name: userRow.name || ""
     }
   });
 }));
@@ -790,6 +789,9 @@ app.use("/api/programming-assessment/master", assessmentMasterAdminRoutes);
 app.use("/api/communication/student", communicationStudentRoutes);
 app.use("/api/communication/admin", communicationAdminRoutes);
 app.use("/api/livekit", livekitRoutes);
+app.use("/api/mentorship", mentorshipRoutes);
+app.use("/api/subscription", subscriptionRoutes);
+app.use("/api/help", helpRoutes);
 
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError) {
@@ -832,6 +834,7 @@ async function start() {
   try {
     await sequelize.query(`ALTER TABLE assessments ADD COLUMN IF NOT EXISTS target_audience VARCHAR(20) DEFAULT 'all'`);
     await sequelize.query(`ALTER TABLE assessments ADD COLUMN IF NOT EXISTS department_ids JSONB DEFAULT NULL`);
+    await sequelize.query(`ALTER TABLE assessments ADD COLUMN IF NOT EXISTS assigned_student_ids JSONB DEFAULT NULL`);
     console.log('Assessment schema migration applied');
   } catch (_err) {
     console.log('Assessment schema migration skipped (table may not exist yet)');
@@ -933,11 +936,577 @@ async function start() {
   }
 
   try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS journey_blueprints (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        interview_number INTEGER UNIQUE NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        level INTEGER NOT NULL,
+        objective TEXT NOT NULL,
+        focus_areas JSONB DEFAULT '[]',
+        difficulty VARCHAR(20) DEFAULT 'Medium',
+        ai_prompt TEXT NOT NULL,
+        follow_up_guidelines JSONB DEFAULT '[]',
+        evaluation_criteria JSONB DEFAULT '{}',
+        domain VARCHAR(100) DEFAULT 'General',
+        role VARCHAR(100) DEFAULT 'Software Engineer',
+        category VARCHAR(100) DEFAULT 'Technical',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_jb_interview_number ON journey_blueprints (interview_number)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_jb_level ON journey_blueprints (level)`);
+    console.log('Journey blueprints table ready');
+  } catch (_err) {
+    console.log('Journey blueprints table migration skipped', _err.message);
+  }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS student_journeys (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        student_id VARCHAR(64) UNIQUE NOT NULL,
+        student_name VARCHAR(255) DEFAULT '',
+        student_email VARCHAR(255) DEFAULT '',
+        institution_id UUID DEFAULT NULL,
+        journey_access_level INTEGER DEFAULT 0,
+        current_level INTEGER DEFAULT 1,
+        current_interview_number INTEGER DEFAULT 1,
+        completed_interviews INTEGER DEFAULT 0,
+        total_interviews INTEGER DEFAULT 24,
+        overall_score FLOAT DEFAULT 0,
+        readiness_score FLOAT DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'not_started',
+        started_at TIMESTAMPTZ DEFAULT NULL,
+        completed_at TIMESTAMPTZ DEFAULT NULL,
+        last_interview_at TIMESTAMPTZ DEFAULT NULL,
+        target_career_goal VARCHAR(255) DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_sj_student_id ON student_journeys (student_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_sj_institution ON student_journeys (institution_id)`);
+    console.log('Student journeys table ready');
+  } catch (_err) {
+    console.log('Student journeys table migration skipped', _err.message);
+  }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS journey_interviews (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        student_id VARCHAR(64) NOT NULL,
+        interview_number INTEGER NOT NULL,
+        blueprint_id UUID DEFAULT NULL,
+        blueprint_title VARCHAR(255) DEFAULT '',
+        level INTEGER NOT NULL,
+        status VARCHAR(20) DEFAULT 'locked',
+        session_id VARCHAR(64) DEFAULT NULL,
+        report_id VARCHAR(100) DEFAULT NULL,
+        overall_score FLOAT DEFAULT 0,
+        grade VARCHAR(5) DEFAULT '',
+        started_at TIMESTAMPTZ DEFAULT NULL,
+        completed_at TIMESTAMPTZ DEFAULT NULL,
+        level_at_time INTEGER DEFAULT 1,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ji_student_interview ON journey_interviews (student_id, interview_number)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_ji_student_status ON journey_interviews (student_id, status)`);
+    console.log('Journey interviews table ready');
+  } catch (_err) {
+    console.log('Journey interviews table migration skipped', _err.message);
+  }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        student_id UUID NOT NULL,
+        plan_key VARCHAR(50) NOT NULL,
+        plan_name VARCHAR(100) NOT NULL,
+        access_level INTEGER NOT NULL DEFAULT 0,
+        interviews_total INTEGER NOT NULL DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        razorpay_order_id VARCHAR(255),
+        razorpay_payment_id VARCHAR(255),
+        razorpay_subscription_id VARCHAR(255),
+        amount_paid INTEGER DEFAULT 0,
+        currency VARCHAR(10) DEFAULT 'INR',
+        gst_amount INTEGER DEFAULT 0,
+        start_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        end_date TIMESTAMP WITH TIME ZONE,
+        invoices JSONB DEFAULT '[]',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_sub_student ON subscriptions (student_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_sub_status ON subscriptions (status)`);
+    console.log('Subscriptions table ready');
+  } catch (_err) {
+    console.log('Subscriptions table migration skipped', _err.message);
+  }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS payment_transactions (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        student_id UUID NOT NULL,
+        subscription_id UUID,
+        amount INTEGER NOT NULL,
+        currency VARCHAR(10) DEFAULT 'INR',
+        gst_amount INTEGER DEFAULT 0,
+        total_amount INTEGER DEFAULT 0,
+        payment_method VARCHAR(50),
+        payment_id VARCHAR(255),
+        order_id VARCHAR(255),
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        invoice_number VARCHAR(50),
+        invoice_date TIMESTAMP WITH TIME ZONE,
+        invoice_items JSONB DEFAULT '[]',
+        plan_key VARCHAR(50),
+        plan_name VARCHAR(100),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_pt_student ON payment_transactions (student_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_pt_subscription ON payment_transactions (subscription_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_pt_payment_id ON payment_transactions (payment_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_pt_invoice ON payment_transactions (invoice_number)`);
+    console.log('Payment transactions table ready');
+  } catch (_err) {
+    console.log('Payment transactions table migration skipped', _err.message);
+  }
+
+  try {
     const { loadApiKeysFromDb } = await import("./services/apiKeyService.js");
     await loadApiKeysFromDb();
     console.log('API keys loaded from database');
   } catch (_err) {
     console.log('API keys load skipped, using env vars:', _err.message);
+  }
+
+  // ── Phase 2: Unified user hierarchy migration ──────────────────────────
+  // Create profile tables and migrate existing admins/students into the
+  // unified `users` table.  Old tables are kept intact for safety.
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS enterprise_students (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID UNIQUE NOT NULL,
+        institution_id UUID DEFAULT NULL,
+        department_id UUID DEFAULT NULL,
+        journey_access INTEGER DEFAULT 0,
+        current_level INTEGER DEFAULT 1,
+        current_interview INTEGER DEFAULT 1,
+        student_status VARCHAR(20) DEFAULT 'active',
+        usn VARCHAR(50) DEFAULT NULL,
+        year VARCHAR(20) DEFAULT NULL,
+        assigned_admin UUID DEFAULT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_es_user ON enterprise_students (user_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_es_institution ON enterprise_students (institution_id)`);
+    console.log('Enterprise students profile table ready');
+  } catch (_err) {
+    console.log('Enterprise students table migration skipped:', _err.message);
+  }
+
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS individual_students (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID UNIQUE NOT NULL,
+        subscription_id UUID DEFAULT NULL,
+        journey_access INTEGER DEFAULT 0,
+        current_level INTEGER DEFAULT 1,
+        current_interview INTEGER DEFAULT 1,
+        subscription_status VARCHAR(20) DEFAULT 'inactive',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_is_user ON individual_students (user_id)`);
+    console.log('Individual students profile table ready');
+  } catch (_err) {
+    console.log('Individual students table migration skipped:', _err.message);
+  }
+
+  // Add status + assigned_admin columns to users table if missing
+  try {
+    await sequelize.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'`);
+    await sequelize.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_admin UUID DEFAULT NULL`);
+    console.log('Users table columns updated');
+  } catch (_err) {
+    console.log('Users table column migration skipped:', _err.message);
+  }
+
+  // Migrate admins → users
+  try {
+    const adminCount = await sequelize.query(`SELECT COUNT(*)::int AS cnt FROM admins`, { plain: true });
+    const userCount = await sequelize.query(`SELECT COUNT(*)::int AS cnt FROM users`, { plain: true });
+    if (adminCount.cnt > 0 && userCount.cnt <= adminCount.cnt) {
+      await sequelize.query(`
+        INSERT INTO users (_id, name, email, phone, organization, admin_role, department_id, role, modules_access, "institutionId", must_change_password, password_hash, password_salt, email_verified, is_active, auth_token, auth_expires_at, assigned_admin, status, created_at, updated_at)
+        SELECT _id, name, email, phone, organization, admin_role, department_id, role, modules_access, "institutionId", must_change_password, password_hash, password_salt, email_verified, is_active, auth_token, auth_expires_at, NULL AS assigned_admin, 'active' AS status, created_at, updated_at
+        FROM admins
+        ON CONFLICT (_id) DO NOTHING
+      `);
+      console.log(`Migrated ${adminCount.cnt} admins → users`);
+    }
+  } catch (_err) {
+    console.log('Admin → users migration skipped:', _err.message);
+  }
+
+  // Migrate enterprise students → users + enterprise_students
+  try {
+    const entCount = await sequelize.query(`SELECT COUNT(*)::int AS cnt FROM students WHERE role = 'student'`, { plain: true });
+    await sequelize.query(`
+      INSERT INTO users (_id, name, email, phone, organization, usn, department_id, year, interested_role, profile_headline, profile_bio, location, modules_access, role, "institutionId", assigned_admin, must_change_password, password_hash, password_salt, email_verified, is_active, auth_token, auth_expires_at, status, created_at, updated_at)
+      SELECT _id, name, email, phone, organization, usn, department_id, year, interested_role, profile_headline, profile_bio, location, modules_access, role, "institutionId", assigned_admin, must_change_password, password_hash, password_salt, email_verified, is_active, auth_token, auth_expires_at, 'active' AS status, created_at, updated_at
+      FROM students
+      WHERE role = 'student'
+      ON CONFLICT (_id) DO NOTHING
+    `);
+    await sequelize.query(`
+      INSERT INTO enterprise_students (_id, user_id, institution_id, department_id, usn, year, assigned_admin, created_at, updated_at)
+      SELECT gen_random_uuid(), s._id, s."institutionId", s.department_id, s.usn, s.year, s.assigned_admin, s.created_at, s.updated_at
+      FROM students s
+      WHERE s.role = 'student'
+      ON CONFLICT (user_id) DO NOTHING
+    `);
+    console.log(`Migrated ${entCount.cnt} enterprise students → users + enterprise_students`);
+  } catch (_err) {
+    console.log('Enterprise student migration skipped:', _err.message);
+  }
+
+  // Migrate individual students → users + individual_students
+  try {
+    const indCount = await sequelize.query(`SELECT COUNT(*)::int AS cnt FROM students WHERE role = 'individual_student'`, { plain: true });
+    await sequelize.query(`
+      INSERT INTO users (_id, name, email, phone, organization, usn, department_id, year, interested_role, profile_headline, profile_bio, location, modules_access, role, "institutionId", assigned_admin, must_change_password, password_hash, password_salt, email_verified, is_active, auth_token, auth_expires_at, status, created_at, updated_at)
+      SELECT _id, name, email, phone, organization, usn, department_id, year, interested_role, profile_headline, profile_bio, location, modules_access, role, "institutionId", assigned_admin, must_change_password, password_hash, password_salt, email_verified, is_active, auth_token, auth_expires_at, 'active' AS status, created_at, updated_at
+      FROM students
+      WHERE role = 'individual_student'
+      ON CONFLICT (_id) DO NOTHING
+    `);
+    await sequelize.query(`
+      INSERT INTO individual_students (_id, user_id, subscription_id, journey_access, current_level, current_interview, subscription_status, created_at, updated_at)
+      SELECT gen_random_uuid(), s._id, NULL AS subscription_id,
+        COALESCE(sj.journey_access_level, 0) AS journey_access,
+        COALESCE(sj.current_level, 1) AS current_level,
+        COALESCE(sj.current_interview_number, 1) AS current_interview,
+        'inactive' AS subscription_status,
+        s.created_at, s.updated_at
+      FROM students s
+      LEFT JOIN student_journeys sj ON sj.student_id = s._id::text
+      WHERE s.role = 'individual_student'
+      ON CONFLICT (user_id) DO NOTHING
+    `);
+    console.log(`Migrated ${indCount.cnt} individual students → users + individual_students`);
+  } catch (_err) {
+    console.log('Individual student migration skipped:', _err.message);
+  }
+
+  // Sync subscription_id into individual_students from active subscriptions
+  try {
+    await sequelize.query(`
+      UPDATE individual_students is2 SET
+        subscription_id = sub._id,
+        subscription_status = sub.status,
+        journey_access = sub.access_level,
+        updated_at = NOW()
+      FROM subscriptions sub
+      WHERE is2.user_id = sub.student_id
+        AND sub.status = 'active'
+    `);
+    console.log('Linked subscriptions to individual_students');
+  } catch (_err) {
+    console.log('Subscription linking skipped:', _err.message);
+  }
+  // ── End Phase 2 migration ─────────────────────────────────────────────
+
+  // ── Phase 3 normalization: new tables + data migration ─────────────────
+  // Each table is in its own try/catch so one failure doesn't block the rest.
+
+  // Plans table — drop old incompatible schema if it exists, then recreate
+  try {
+    const [[existing]] = await sequelize.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'plans' AND column_name = 'plan_key'
+    `);
+    if (!existing) {
+      console.log('Recreating plans table with normalized schema...');
+      await sequelize.query(`DROP TABLE IF EXISTS plans CASCADE`);
+      await sequelize.query(`
+        CREATE TABLE plans (
+          _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          plan_key VARCHAR(50) NOT NULL UNIQUE,
+          plan_name VARCHAR(100) NOT NULL,
+          duration_months INTEGER NOT NULL DEFAULT 1,
+          max_level INTEGER NOT NULL DEFAULT 1,
+          journey_access INTEGER NOT NULL DEFAULT 0,
+          total_interviews INTEGER NOT NULL DEFAULT 0,
+          price INTEGER NOT NULL DEFAULT 0,
+          gst_percentage FLOAT NOT NULL DEFAULT 18,
+          status VARCHAR(20) DEFAULT 'active',
+          features JSONB DEFAULT '[]',
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+      await sequelize.query(`CREATE INDEX idx_plans_key ON plans (plan_key)`);
+      console.log('Plans table recreated with normalized schema');
+    } else {
+      console.log('Plans table already has normalized schema');
+    }
+  } catch (_err) {
+    console.log('Plans table migration error:', _err.message);
+  }
+
+  // Assessment assignments junction table
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS assessment_assignments (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        assessment_id UUID NOT NULL,
+        student_id UUID NOT NULL,
+        assigned_by UUID,
+        assigned_at TIMESTAMPTZ DEFAULT NOW(),
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(assessment_id, student_id)
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_aa_assessment ON assessment_assignments (assessment_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_aa_student ON assessment_assignments (student_id)`);
+    console.log('Assessment assignments junction table ready');
+  } catch (_err) {
+    console.log('Assessment assignments table migration error:', _err.message);
+  }
+
+  // Assessment departments junction table
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS assessment_departments (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        assessment_id UUID NOT NULL,
+        department_id UUID NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(assessment_id, department_id)
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_ad_assessment ON assessment_departments (assessment_id)`);
+    console.log('Assessment departments junction table ready');
+  } catch (_err) {
+    console.log('Assessment departments table migration error:', _err.message);
+  }
+
+  // Institution modules junction table
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS institution_modules (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        institution_id UUID NOT NULL,
+        module_name VARCHAR(50) NOT NULL,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(institution_id, module_name)
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_im_institution ON institution_modules (institution_id)`);
+    console.log('Institution modules junction table ready');
+  } catch (_err) {
+    console.log('Institution modules table migration error:', _err.message);
+  }
+
+  // Seed plans from hardcoded PLANS constant
+  try {
+    const { Plan } = await import('./database/index.js');
+    const planCount = await Plan.count();
+    if (planCount === 0) {
+      const SEED_PLANS = [
+        {
+          plan_key: 'basic', plan_name: 'Basic', duration_months: 1,
+          max_level: 1, journey_access: 1, total_interviews: 4,
+          price: 499, gst_percentage: 18, status: 'active',
+          features: ['Level 1 Journey Access', '4 AI Interviews', 'Resume Builder', 'Reports & Analytics'],
+        },
+        {
+          plan_key: 'advanced', plan_name: 'Advanced', duration_months: 3,
+          max_level: 3, journey_access: 3, total_interviews: 12,
+          price: 1199, gst_percentage: 18, status: 'active',
+          features: ['Levels 1-3 Journey Access', '12 AI Interviews', 'Resume Builder', 'Reports & Analytics', 'Programming Practice', 'Communication Skills'],
+        },
+        {
+          plan_key: 'professional', plan_name: 'Professional', duration_months: 6,
+          max_level: 6, journey_access: 6, total_interviews: 24,
+          price: 1999, gst_percentage: 18, status: 'active',
+          features: ['All 6 Levels Journey Access', '24 AI Interviews', 'Resume Builder', 'Reports & Analytics', 'Programming Practice', 'Communication Skills', 'Certificates', 'Priority Support'],
+        },
+      ];
+      for (const p of SEED_PLANS) await Plan.upsert(p);
+      console.log('Seeded 3 subscription plans');
+    } else {
+      console.log(`Plans already exist (${planCount} found)`);
+    }
+  } catch (_err) {
+    console.log('Plan seeding skipped:', _err.message);
+  }
+
+  // Migrate existing JSONB assigned_student_ids → assessment_assignments junction table
+  try {
+    const [assessments] = await sequelize.query(
+      `SELECT _id, assigned_student_ids FROM assessments WHERE assigned_student_ids IS NOT NULL AND assigned_student_ids != '[]'::jsonb`
+    );
+    let inserted = 0;
+    for (const a of assessments) {
+      const ids = Array.isArray(a.assigned_student_ids) ? a.assigned_student_ids : [];
+      for (const sid of ids) {
+        await sequelize.query(
+          `INSERT INTO assessment_assignments (assessment_id, student_id) VALUES (:aid, :sid) ON CONFLICT (assessment_id, student_id) DO NOTHING`,
+          { replacements: { aid: a._id, sid } }
+        );
+        inserted++;
+      }
+    }
+    if (inserted > 0) console.log(`Migrated ${inserted} assessment assignments from JSON to junction table`);
+    else console.log('Assessment assignments already normalized');
+  } catch (_err) {
+    console.log('Assessment assignment migration skipped:', _err.message);
+  }
+
+  // Migrate existing JSONB department_ids → assessment_departments junction table
+  try {
+    const [assessments] = await sequelize.query(
+      `SELECT _id, department_ids FROM assessments WHERE department_ids IS NOT NULL AND department_ids != '[]'::jsonb`
+    );
+    let inserted = 0;
+    for (const a of assessments) {
+      const ids = Array.isArray(a.department_ids) ? a.department_ids : [];
+      for (const did of ids) {
+        await sequelize.query(
+          `INSERT INTO assessment_departments (assessment_id, department_id) VALUES (:aid, :did) ON CONFLICT (assessment_id, department_id) DO NOTHING`,
+          { replacements: { aid: a._id, did } }
+        );
+        inserted++;
+      }
+    }
+    if (inserted > 0) console.log(`Migrated ${inserted} assessment departments from JSON to junction table`);
+    else console.log('Assessment departments already normalized');
+  } catch (_err) {
+    console.log('Assessment department migration skipped:', _err.message);
+  }
+
+  // Migrate institution modules from JSON → institution_modules table
+  try {
+    const [institutions] = await sequelize.query(
+      `SELECT _id, modules FROM institutions WHERE modules IS NOT NULL`
+    );
+    let inserted = 0;
+    for (const inst of institutions) {
+      const modules = inst.modules || {};
+      const moduleNames = Array.isArray(modules) ? modules : Object.keys(modules);
+      for (const mod of moduleNames) {
+        const enabled = typeof modules[mod] === 'boolean' ? modules[mod] : true;
+        await sequelize.query(
+          `INSERT INTO institution_modules (institution_id, module_name, enabled) VALUES (:iid, :mod, :enabled) ON CONFLICT (institution_id, module_name) DO NOTHING`,
+          { replacements: { iid: inst._id, mod, enabled } }
+        );
+        inserted++;
+      }
+    }
+    if (inserted > 0) console.log(`Migrated ${inserted} institution modules to junction table`);
+    else console.log('Institution modules already normalized');
+  } catch (_err) {
+    console.log('Institution module migration skipped:', _err.message);
+  }
+  // ── End Phase 3 normalization ──────────────────────────────────────────
+
+  // ── Phase 3B: Add plan_id FK to subscriptions ──────────────────────────
+  try {
+    await sequelize.query(`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan_id UUID DEFAULT NULL`);
+    // Back-fill plan_id from plan_key
+    await sequelize.query(`
+      UPDATE subscriptions sub SET plan_id = p._id
+      FROM plans p WHERE sub.plan_key = p.plan_key AND sub.plan_id IS NULL
+    `);
+    console.log('Subscriptions plan_id column ready');
+  } catch (_err) {
+    console.log('Subscriptions plan_id migration skipped:', _err.message);
+  }
+
+  // ── Phase 3C: Remove branch_name from enterprise_students ──────────────
+  try {
+    await sequelize.query(`ALTER TABLE enterprise_students DROP COLUMN IF EXISTS branch_name`);
+    console.log('Removed branch_name from enterprise_students');
+  } catch (_err) {
+    console.log('branch_name removal skipped:', _err.message);
+  }
+
+  try {
+    const { BLUEPRINTS } = await import("./mentorship/blueprints.js");
+    const { JourneyBlueprint } = await import("./database/index.js");
+    const existingCount = await JourneyBlueprint.count();
+    if (existingCount === 0) {
+      for (const bp of BLUEPRINTS) {
+        await JourneyBlueprint.upsert({
+          interview_number: bp.interview_number,
+          title: bp.title,
+          level: bp.level,
+          objective: bp.objective,
+          focus_areas: bp.focus_areas,
+          difficulty: bp.difficulty,
+          ai_prompt: bp.ai_prompt,
+          follow_up_guidelines: bp.follow_up_guidelines,
+          evaluation_criteria: bp.evaluation_criteria,
+          domain: bp.domain,
+          role: bp.role,
+          category: bp.category,
+        });
+      }
+      console.log(`Seeded ${BLUEPRINTS.length} journey blueprints`);
+    } else {
+      console.log(`Journey blueprints already exist (${existingCount} found)`);
+    }
+  } catch (_err) {
+    console.log('Blueprint seeding skipped:', _err.message);
+  }
+
+  // ── Help Requests table ─────────────────────────────────────────────────
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS help_requests (
+        _id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID DEFAULT NULL,
+        name VARCHAR(255) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        phone VARCHAR(50) DEFAULT '',
+        institution VARCHAR(255) DEFAULT '',
+        issue TEXT NOT NULL,
+        status VARCHAR(20) DEFAULT 'open',
+        response TEXT DEFAULT NULL,
+        responded_by VARCHAR(255) DEFAULT NULL,
+        responded_at TIMESTAMPTZ DEFAULT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_hr_user ON help_requests (user_id)`);
+    await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_hr_status ON help_requests (status)`);
+    console.log('Help requests table ready');
+  } catch (_err) {
+    console.log('Help requests table migration skipped:', _err.message);
   }
 
   const server = app.listen(config.port, "0.0.0.0", () => {

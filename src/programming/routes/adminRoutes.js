@@ -2,7 +2,7 @@ import express from 'express';
 import PDFDocument from 'pdfkit';
 import XLSX from 'xlsx';
 import { requireAuth, requireModuleAccess, requireRole } from '../../aptitude/middleware/auth.js';
-import { Op, getSequelize, Student, ProgrammingProblem, ProgrammingSubmission, ProgrammingEditorial, ProgrammingChallenge, ProgrammingContest } from '../../database/index.js';
+import { Op, getSequelize, User, ProgrammingProblem, ProgrammingSubmission, ProgrammingEditorial, ProgrammingChallenge, ProgrammingContest } from '../../database/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { DIFFICULTIES, STATUSES, CONCEPTS, DEFAULT_PRACTICE_LANGUAGES, LANGUAGES } from '../utils/constants.js';
 import { badRequest, notFound } from '../utils/httpError.js';
@@ -11,10 +11,11 @@ import {
   INVALID_PROBLEM_TITLE_PATTERN,
   isVisibleProblemTitle,
 } from '../utils/problemVisibility.js';
+import { buildStudentFilter, buildStudentWhere } from '../../aptitude/utils/adminScope.js';
 
 const router = express.Router();
 
-router.use(requireAuth, requireRole(ROLES.ADMIN), requireModuleAccess('programming'));
+router.use(requireAuth, requireRole(ROLES.ADMIN, ROLES.MASTER_ADMIN), requireModuleAccess('programming'));
 
 function parseNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -460,7 +461,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const contests = await ProgrammingContest.findAll({
       where: {
-        [Op.or]: [{ institution_id: req.user._id }, { institution_id: null }],
+        [Op.or]: [{ institution_id: req.user.institutionId }, { institution_id: null }],
       },
       order: [['starts_at', 'DESC']],
       limit: 100,
@@ -503,7 +504,7 @@ router.post(
       starts_at: startsAt,
       ends_at: endsAt,
       status: req.body.status === 'draft' ? 'draft' : 'published',
-      institution_id: req.user._id,
+      institution_id: req.user.institutionId || null,
       created_by: req.user._id,
     });
 
@@ -519,8 +520,9 @@ router.post(
 router.get(
   '/leaderboard',
   asyncHandler(async (req, res) => {
-    const assignedStudents = await Student.findAll({
-      where: { assigned_admin: req.user._id },
+    const studentWhere = buildStudentWhere(req.user);
+    const assignedStudents = await User.findAll({
+      where: studentWhere,
       attributes: ['_id', 'name', 'email'],
     });
     const assignedStudentIds = assignedStudents.map((student) => student._id);
@@ -579,8 +581,9 @@ router.get(
   '/submissions',
   asyncHandler(async (req, res) => {
     const { problem_id, status, page = 1, limit = 50 } = req.query;
-    const assignedStudents = await Student.findAll({
-      where: { assigned_admin: req.user._id },
+    const studentWhere = buildStudentWhere(req.user);
+    const assignedStudents = await User.findAll({
+      where: studentWhere,
       attributes: ['_id'],
     });
     const assignedStudentIds = assignedStudents.map((s) => s._id);
@@ -608,7 +611,7 @@ router.get(
     const studentIds = [...new Set(submissions.map((s) => s.student_id).filter(Boolean))];
     const problemIds = [...new Set(submissions.map((s) => s.problem_id).filter(Boolean))];
     const [students, problems] = await Promise.all([
-      Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
     const studentMap = {};
@@ -658,7 +661,7 @@ router.get(
     let student = null;
     let problem = null;
     if (submission.student_id) {
-      student = await Student.findByPk(submission.student_id, { attributes: ['name', 'email'] });
+      student = await User.findByPk(submission.student_id, { attributes: ['name', 'email'] });
     }
     if (submission.problem_id) {
       problem = await ProgrammingProblem.findByPk(submission.problem_id, { attributes: ['title', 'difficulty', 'concept'] });
@@ -688,14 +691,7 @@ router.get(
 router.get(
   '/dashboard',
   asyncHandler(async (req, res) => {
-    const assignedStudents = await Student.findAll({
-      where: { assigned_admin: req.user._id },
-      attributes: ['_id'],
-    });
-    const assignedStudentIds = assignedStudents.map((s) => s._id);
-    const studentFilter = assignedStudentIds.length
-      ? { student_id: { [Op.in]: assignedStudentIds } }
-      : { student_id: null };
+    const { filter: studentFilter } = await buildStudentFilter(req.user);
 
     const problemFilter = { is_deleted: { [Op.ne]: true }, title: { [Op.notRegexp]: INVALID_PROBLEM_TITLE_PATTERN.source } };
     const publishedProblemFilter = { ...problemFilter, status: 'published' };
@@ -725,7 +721,7 @@ router.get(
     const recentStudentIds = [...new Set(recentSubmissions.map((s) => s.student_id).filter(Boolean))];
     const recentProblemIds = [...new Set(recentSubmissions.map((s) => s.problem_id).filter(Boolean))];
     const [recentStudents, recentProblems] = await Promise.all([
-      Student.findAll({ where: { _id: { [Op.in]: recentStudentIds } }, attributes: ['_id', 'name', 'email'] }),
+      User.findAll({ where: { _id: { [Op.in]: recentStudentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: recentProblemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
     const recentStudentMap = {};
@@ -772,18 +768,11 @@ router.get(
 router.get(
   '/analytics/students',
   asyncHandler(async (req, res) => {
-    const assignedStudents = await Student.findAll({
-      where: { assigned_admin: req.user._id },
-      attributes: ['_id'],
-    });
-    const assignedStudentIds = assignedStudents.map((s) => s._id);
-    const studentFilter = assignedStudentIds.length
-      ? { student_id: { [Op.in]: assignedStudentIds } }
-      : { student_id: null };
+    const { filter: studentFilter, studentIds: assignedStudentIds } = await buildStudentFilter(req.user);
 
     const sequelize = getSequelize();
     const [totalStudents, submissions] = await Promise.all([
-      assignedStudentIds.length,
+      assignedStudentIds?.length || 0,
       ProgrammingSubmission.findAll({
         where: studentFilter,
         attributes: [
@@ -798,7 +787,7 @@ router.get(
     ]);
 
     const studentIds = submissions.map((s) => s.student_id);
-    const students = await Student.findAll({
+    const students = await User.findAll({
       where: { _id: { [Op.in]: studentIds } },
       attributes: ['_id', 'name', 'email'],
     });
@@ -828,14 +817,7 @@ router.get(
   '/exports/coding-progress',
   asyncHandler(async (req, res) => {
     const format = String(req.query.format || 'xlsx').toLowerCase();
-    const assignedStudents = await Student.findAll({
-      where: { assigned_admin: req.user._id },
-      attributes: ['_id'],
-    });
-    const assignedStudentIds = assignedStudents.map((student) => student._id);
-    const studentFilter = assignedStudentIds.length
-      ? { student_id: { [Op.in]: assignedStudentIds } }
-      : { student_id: null };
+    const { filter: studentFilter } = await buildStudentFilter(req.user);
 
     const submissions = await ProgrammingSubmission.findAll({
       where: studentFilter,
@@ -846,7 +828,7 @@ router.get(
     const studentIds = [...new Set(submissions.map((s) => s.student_id).filter(Boolean))];
     const problemIds = [...new Set(submissions.map((s) => s.problem_id).filter(Boolean))];
     const [students, problems] = await Promise.all([
-      Student.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
+      User.findAll({ where: { _id: { [Op.in]: studentIds } }, attributes: ['_id', 'name', 'email'] }),
       ProgrammingProblem.findAll({ where: { _id: { [Op.in]: problemIds } }, attributes: ['_id', 'title', 'difficulty', 'concept'] }),
     ]);
     const studentMap = {};

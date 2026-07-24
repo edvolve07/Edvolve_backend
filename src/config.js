@@ -6,6 +6,10 @@ dotenv.config();
 const rootPort = process.env.PORT;
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'replace_with_a_long_random_secret' || process.env.JWT_SECRET.length < 32) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[FATAL] JWT_SECRET is missing or too weak. Set JWT_SECRET in your .env (min 32 chars).');
+    process.exit(1);
+  }
   const generated = crypto.randomBytes(64).toString('hex');
   console.error(`[SECURITY] JWT_SECRET is weak or missing. Generated temporary secret: ${generated}`);
   console.error('[SECURITY] Set JWT_SECRET in your .env file to a long random string (min 32 chars).');
@@ -59,8 +63,8 @@ export const config = {
   adminEmails: new Set(String(process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)),
   masterAdminEmails: new Set(String(process.env.MASTER_ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)),
   livekitUrl: process.env.LIVEKIT_URL || 'ws://localhost:7880',
-  livekitApiKey: process.env.LIVEKIT_API_KEY || 'devkey',
-  livekitApiSecret: process.env.LIVEKIT_API_SECRET || 'devsecret',
+  livekitApiKey: process.env.LIVEKIT_API_KEY || null,
+  livekitApiSecret: process.env.LIVEKIT_API_SECRET || null,
 };
 
 

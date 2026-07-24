@@ -8,7 +8,7 @@ import { serializeStudentTestResult } from '../utils/studentResultSerializer.js'
 
 const router = express.Router();
 
-router.use(requireAuth, requireRole('student'), requireModuleAccess('programming'));
+router.use(requireAuth, requireRole('student', 'individual_student'), requireModuleAccess('programming'));
 
 router.get(
   '/assessments',

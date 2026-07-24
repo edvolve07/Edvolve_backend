@@ -25,7 +25,7 @@ import { isVisibleProblemTitle, INVALID_PROBLEM_TITLE_PATTERN } from '../utils/p
 const sequelize = getSequelize();
 const router = express.Router();
 
-router.use(requireAuth, requireRole('student'), requireModuleAccess('programming'));
+router.use(requireAuth, requireRole('student', 'individual_student'), requireModuleAccess('programming'));
 
 function getPracticeLanguages(problem) {
   const configured = Array.isArray(problem?.languages)

@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed-test-data.js",
     "seed:programming": "node src/programming/seed/seedProblems.js",
     "seed:programming-pg": "node src/programming/seed/seedPostgres.js",
     "curate:programming": "node src/programming/seed/curateProblems.js",
